@@ -1,0 +1,15 @@
+{
+  "title": "Họp chốt ra mắt ví trả góp",
+  "date": "2026-06-13",
+  "duration_min": 32,
+  "summary": "Cuộc họp chốt kế hoạch ra mắt ví trả góp tuần sau.",
+  "key_points": ["MVP chỉ hỗ trợ kỳ hạn 3 và 6 tháng"],
+  "decisions": [{"text": "Ra mắt ví trả góp tuần sau", "timestamp": null, "quote": "Chốt là tuần sau mình ra mắt"}],
+  "action_items": [
+    {"task": "Thiết kế UI", "owner": "Lan", "deadline": "Thứ Tư 17/06", "priority": "cao", "timestamp": null, "quote": "em lo phần thiết kế UI"}
+  ],
+  "risks": ["Pháp lý là blocker cho go-live"],
+  "open_questions": ["Hạn mức tối đa là bao nhiêu?"],
+  "next_meeting": "Thứ Sáu 19/06",
+  "full_transcript": "Nam: Chốt là tuần sau mình ra mắt..."
+}

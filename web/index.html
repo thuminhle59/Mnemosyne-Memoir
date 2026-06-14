@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Memoir · Decision Memory</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="./styles.css?v=20260615-memoir-soft-gray">
+  </head>
+  <body>
+    <div id="app" class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <img class="brand-mark" src="./assets/mnemosyne-logo.png" alt="" aria-hidden="true">
+          <div>
+            <strong>Memoir</strong>
+            <small>Decision Memory</small>
+          </div>
+        </div>
+        <label class="global-search">
+          <span>Search</span>
+          <input id="globalSearch" type="search" placeholder="Search decision drift, contradictions, owners, evidence...">
+        </label>
+        <button id="newMeetingBtn" class="primary-btn" type="button">+ New meeting</button>
+      </header>
+
+      <main class="workspace">
+        <aside class="sidebar">
+          <section class="panel-section">
+            <div class="section-title">
+              <span>Memory sources</span>
+              <b id="meetingCount">0</b>
+            </div>
+            <input id="librarySearch" class="input" type="search" placeholder="Filter memory sources">
+          </section>
+          <div id="meetingList" class="meeting-list scroll"></div>
+          <section class="terminology">
+            <button id="toggleGlossaryBtn" class="section-toggle" type="button">
+              <span>Terminology</span>
+              <b id="termCount">0 terms</b>
+            </button>
+            <div id="glossaryPanel" class="glossary-panel">
+              <form id="glossaryForm" class="inline-form">
+                <input id="termInput" class="input" type="text" placeholder="Canonical term">
+                <input id="wrongInput" class="input" type="text" placeholder="Misheard as">
+                <button class="small-btn" type="submit">Add</button>
+              </form>
+              <form id="guideForm" class="guide-drop">
+                <input id="guideFile" type="file" accept=".txt,.md,.docx">
+                <button class="small-btn" type="submit">Learn guide</button>
+              </form>
+              <div id="glossaryList" class="term-list"></div>
+            </div>
+          </section>
+          <div class="connection-dot"><span></span>API connected through FastAPI</div>
+        </aside>
+
+        <section class="content">
+          <div class="content-head">
+            <div class="meta-row" id="activeMeta">No meeting selected</div>
+            <h1 id="activeTitle">Memoir</h1>
+            <p id="activeSummary" class="summary">Load meetings or ingest a transcript to start building decision memory.</p>
+            <div class="edge-strip" aria-label="Agent differentiators">
+              <span>Cross-meeting memory</span>
+              <span>Contradiction detection</span>
+              <span>Forgotten decision resurfacing</span>
+              <span>Evidence-backed Q&amp;A</span>
+            </div>
+            <div class="tabs" role="tablist">
+              <a id="tabMemory" class="tab active" href="#memoryView" data-tab="memory" onclick="switchTab('memory')">Memory Ops</a>
+              <a id="tabDigest" class="tab" href="#digestView" data-tab="digest" onclick="switchTab('digest')">Executive Brief</a>
+              <a id="tabTranscript" class="tab" href="#transcriptView" data-tab="transcript" onclick="switchTab('transcript')">Evidence Lab</a>
+            </div>
+          </div>
+          <section id="memoryView" class="view scroll active">
+            <div class="memory-overview">
+              <div class="ops-intro">
+                <div>
+                  <h2>Not a meeting recorder. A decision memory layer.</h2>
+                </div>
+                <p>Memoir watches how decisions mutate across meetings, flags claims that disagree, brings back forgotten commitments, and answers with evidence instead of vibes.</p>
+              </div>
+              <div class="memory-side-stack">
+                <div class="memory-hero">
+                  <article class="radar-card accent">
+                    <span>Decision Drift</span>
+                    <strong id="decisionDriftCount">0</strong>
+                    <small>Decisions or facts that changed across meeting history</small>
+                  </article>
+                  <article class="radar-card">
+                    <span>Contradiction Radar</span>
+                    <strong id="contradictionCount">0</strong>
+                    <small>Conflicting claims detected before someone asks</small>
+                  </article>
+                  <article class="radar-card">
+                    <span>Action Memory</span>
+                    <strong id="openActionCount">0</strong>
+                    <small>Open commitments and owner debt still being tracked</small>
+                  </article>
+                </div>
+                <div class="agent-edge-grid">
+                  <article class="edge-card">
+                    <h2>Longitudinal Memory</h2>
+                    <p>Most meeting tools summarize one call. Memoir compares current claims against prior decisions.</p>
+                  </article>
+                  <article class="edge-card">
+                    <h2>Proactive Risk Signals</h2>
+                    <p>Contradictions, resurfaced rejected ideas, and open action debt are surfaced without waiting for a manual search.</p>
+                  </article>
+                  <article class="edge-card">
+                    <h2>Evidence-First Answers</h2>
+                    <p>Answers are designed around citations, quotes, and meeting IDs so teams can audit why the agent said something.</p>
+                  </article>
+                </div>
+              </div>
+            </div>
+            <div class="memory-grid">
+              <article>
+                <h2>Decision Ledger</h2>
+                <ul id="decisionThreads"></ul>
+              </article>
+              <article>
+                <h2>Contradiction Radar</h2>
+                <ul id="contradictionList"></ul>
+              </article>
+              <article>
+                <h2>Resurfaced Decisions</h2>
+                <ul id="resurfacedList"></ul>
+              </article>
+              <article>
+                <h2>Action Memory</h2>
+                <ul id="allActions"></ul>
+              </article>
+              <article class="wide">
+                <h2>Evidence Graph</h2>
+                <ul id="facts"></ul>
+              </article>
+            </div>
+          </section>
+
+          <section id="transcriptView" class="view scroll">
+            <div class="toolbar">
+              <input id="transcriptSearch" class="input" type="search" placeholder="Find in transcript">
+              <button id="reanalyzeBtn" class="small-btn" type="button">Reanalyze</button>
+              <button id="deleteMeetingBtn" class="danger-btn" type="button">Delete</button>
+            </div>
+            <textarea id="transcriptText" class="transcript-editor" placeholder="Transcript will appear here"></textarea>
+          </section>
+
+          <section id="digestView" class="view scroll">
+            <div class="toolbar">
+              <button id="digestBtn" class="small-btn" type="button">Generate executive brief</button>
+              <button id="followupBtn" class="small-btn" type="button">Refresh follow-up</button>
+            </div>
+            <div class="digest-grid">
+              <article>
+                <h2>Signal Brief</h2>
+                <ul id="keyPoints"></ul>
+              </article>
+              <article>
+                <h2>Current Decision State</h2>
+                <ul id="decisions"></ul>
+              </article>
+              <article>
+                <h2>Action Debt</h2>
+                <ul id="meetingActions"></ul>
+              </article>
+              <article>
+                <h2>Risks & Blockers</h2>
+                <ul id="risks"></ul>
+              </article>
+            </div>
+          </section>
+        </section>
+
+        <aside class="chat">
+          <div class="chat-head">
+            <div>
+              <span>Evidence Q&amp;A</span>
+              <small id="chatScope">Ask across memory, not one transcript</small>
+            </div>
+          </div>
+          <div id="chatMessages" class="chat-messages scroll"></div>
+          <div id="suggestions" class="suggestions"></div>
+          <form id="chatForm" class="chat-form">
+            <textarea id="chatInput" rows="1" placeholder="Ask which decision changed, who owns it, and what evidence supports it..."></textarea>
+            <button class="primary-btn icon-btn" type="submit">Ask</button>
+          </form>
+        </aside>
+      </main>
+
+      <dialog id="importDialog" class="import-dialog">
+        <form id="ingestForm">
+          <div class="dialog-head">
+            <div>
+              <h2>New meeting</h2>
+              <p>Paste a transcript or upload audio/video. Memoir will extract memory, decisions, conflicts and commitments.</p>
+            </div>
+            <button id="closeImportBtn" class="ghost-btn" type="button">Close</button>
+          </div>
+          <div class="form-grid">
+            <label>Title<input id="ingestTitle" class="input" type="text" placeholder="Weekly product sync"></label>
+            <label>Date<input id="ingestDate" class="input" type="date"></label>
+          </div>
+          <textarea id="ingestText" class="transcript-editor compact" placeholder="Paste transcript here"></textarea>
+          <label class="file-box">
+            <input id="ingestFile" type="file" accept=".wav,.mp3,.m4a,.mp4,.webm,.aiff,.ogg,.txt,.md">
+            <span id="ingestFileLabel">Optional audio/video upload</span>
+          </label>
+          <p id="uploadStatus" class="upload-status" role="status" aria-live="polite"></p>
+          <label class="check-row"><input id="extractAudio" type="checkbox" checked> Extract audio with ffmpeg when needed</label>
+          <div class="dialog-actions">
+            <button class="ghost-btn" type="button" id="cancelIngestBtn">Cancel</button>
+            <button id="ingestSubmitBtn" class="primary-btn" type="submit">Ingest</button>
+          </div>
+        </form>
+      </dialog>
+
+      <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    </div>
+    <script>
+      window.switchTab = function switchTab(tab) {
+        if (!["memory", "digest", "transcript"].includes(tab)) return;
+        window.__MNEMOSYNE_TAB = tab;
+        document.querySelectorAll(".tab").forEach((button) => {
+          button.classList.toggle("active", button.dataset.tab === tab);
+        });
+        document.querySelectorAll(".view").forEach((view) => {
+          view.classList.toggle("active", view.id === `${tab}View`);
+        });
+      };
+      window.addEventListener("hashchange", () => {
+        const tab = {
+          "#memoryView": "memory",
+          "#digestView": "digest",
+          "#transcriptView": "transcript",
+        }[window.location.hash];
+        if (tab) window.switchTab(tab);
+      });
+      if (window.location.hash) {
+        window.dispatchEvent(new HashChangeEvent("hashchange"));
+      }
+    </script>
+    <script src="./app.js?v=20260615-memoir-soft-gray" defer></script>
+  </body>
+</html>

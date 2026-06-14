@@ -1,0 +1,14 @@
+[server]
+# Meeting recordings (mp4/video) are large; raise the upload + websocket caps.
+# ffmpeg then strips video to a small mp3 before anything is sent to the STT endpoint.
+maxUploadSize = 2048   # MB (default 200)
+maxMessageSize = 2048  # MB (default 200) — websocket frame for the uploaded bytes
+
+[theme]
+# "Warm Editorial Intelligence" — from the Claude Design handoff (Meeting Brain.dc.html).
+base = "light"
+primaryColor = "#C65D3B"            # terracotta accent
+backgroundColor = "#EFEAE0"         # warm paper / cream
+secondaryBackgroundColor = "#F4F0E7"  # panel cream (cards/sidebar)
+textColor = "#23201B"               # warm near-black ink
+font = "sans serif"

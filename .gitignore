@@ -1,0 +1,35 @@
+# Secrets — NEVER commit (contest repo is public)
+.env
+.env.*
+!.env.example
+.greennode.json
+.agentbase-state.json
+*.key
+*.pem
+credentials.json
+*.credentials.json
+
+# AgentBase skills (dev tooling, not runtime — không cần submit)
+.claude/
+.agents/
+.agentbase/
+
+# Python
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Build / OS
+.DS_Store
+*.db
+dist/
+build/
+*.egg-info/
+
+# Media artifacts từ demo (dữ liệu, không push)
+*.wav
+*.aiff
+*.mp3
+*.docx
+*.pdf

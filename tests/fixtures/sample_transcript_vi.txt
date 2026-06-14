@@ -1,0 +1,5 @@
+Nam: Chốt là tuần sau mình ra mắt tính năng ví trả góp, bản MVP thôi.
+Lan: Ok, em lo phần thiết kế UI, xong trước thứ Tư.
+Nam: Anh Hùng review pháp lý giúp, deadline thứ Năm nhé. Cái này là blocker cho go-live.
+Hùng: Được, anh làm xong thứ Năm. Mà hạn mức tối đa cho user mới mình chưa chốt.
+Nam: Ừ, để buổi sau thứ Sáu mình chốt hạn mức và phí.
