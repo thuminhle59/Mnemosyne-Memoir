@@ -196,6 +196,18 @@ def test_estimate_timestamp_none_without_duration():
     assert brain.estimate_timestamp(m, "abc") is None
 
 
+def test_estimate_timestamp_uses_chunk_map():
+    import types, json
+    transcript = "AAAA TARGET0\nBBBB TARGET1"   # chunk0 chars 0-11, chunk1 chars 13-24
+    chunk_map = json.dumps([
+        {"t0": 0, "c0": 0, "clen": 12, "dur": 600},
+        {"t0": 600, "c0": 13, "clen": 12, "dur": 600},
+    ])
+    m = types.SimpleNamespace(transcript=transcript, duration_sec=1200, chunk_map=chunk_map)
+    # "TARGET1" sits in chunk1 (t0=600); proportional-whole would mis-place it earlier
+    assert brain.estimate_timestamp(m, "TARGET1") == "14:10"
+
+
 def test_contradiction_view_enriches_both_sides():
     from models import Contradiction
     mid = db.save_meeting(_report(title="Họp 1", date="2026-06-02", transcript="t"))

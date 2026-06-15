@@ -328,6 +328,7 @@ def ingest(text: str | None = None, audio: bytes | None = None,
     Returns {meeting_id, report, facts, contradictions, skipped, duplicate_of}."""
     date = date or _dt.date.today().isoformat()
     duration_sec = None
+    chunk_map = None
     ah = None
     if text is None:
         if not audio:
@@ -348,14 +349,27 @@ def ingest(text: str | None = None, audio: bytes | None = None,
         # -> regex cleanup (deterministic guarantee for known terms). Per-chunk so
         # each LLM correction call stays small/bounded.
         parts = []
+        chunk_entries = []        # [{t0,c0,clen,dur}] for chunk-accurate ≈timestamps
+        char_cursor = 0
+        time_cursor = 0.0
         for c in chunks:
+            d = media.wav_duration(c)
+            t0 = time_cursor
+            time_cursor += d
             t = transcribe.transcribe(c, filename="audio.wav", language=language)
             t = correct_terms(t)                  # layer chính: LLM hiểu ngữ cảnh
             t = transcribe.apply_corrections(t)   # layer sau: regex chuẩn hoá/đảm bảo
-            if t:
-                parts.append(t)
+            if not t:
+                continue
+            if parts:
+                char_cursor += 1                  # the "\n" join separator
+            chunk_entries.append({"t0": round(t0, 2), "c0": char_cursor,
+                                  "clen": len(t), "dur": round(d, 2)})
+            char_cursor += len(t)
+            parts.append(t)
         text = "\n".join(parts)
-        duration_sec = int(sum(media.wav_duration(c) for c in chunks)) or None
+        duration_sec = int(time_cursor) or None
+        chunk_map = json.dumps(chunk_entries) if chunk_entries else None
     if not text.strip():
         raise ValueError("empty transcript")
 
@@ -367,7 +381,7 @@ def ingest(text: str | None = None, audio: bytes | None = None,
     salt = str(_dt.datetime.now().timestamp()) if on_duplicate == "new" else ""
     meeting_id = db.save_meeting(
         report, transcript=text, duration_sec=duration_sec, source_file=source_file,
-        audio_hash_val=ah, dedup=(on_duplicate != "new"), dedup_salt=salt,
+        audio_hash_val=ah, dedup=(on_duplicate != "new"), dedup_salt=salt, chunk_map=chunk_map,
     )
 
     facts = extract_facts(report, text)
@@ -414,10 +428,10 @@ def reanalyze(meeting_id: int, transcript: str) -> dict:
 # ------------------------------------------------- timestamp + contradiction view
 
 def estimate_timestamp(meeting, quote: str) -> str | None:
-    """APPROXIMATE 'mm:ss' of where `quote` was said, for listen-back. The STT
-    endpoint returns no real timestamps, so we estimate position = (char index of
-    the quote in the transcript / transcript length) * audio duration. Rough
-    (assumes a uniform speaking rate); returned with a '≈' label in the UI."""
+    """APPROXIMATE 'mm:ss' of where `quote` was said, for listen-back. STT returns no
+    real timestamps, so we locate the quote's char index in the transcript and map it
+    to time. If a chunk_map exists we map index -> the right audio chunk -> proportional
+    within that chunk (much tighter); else fall back to whole-transcript proportional."""
     if not meeting or not quote:
         return None
     transcript = meeting.transcript or ""
@@ -431,7 +445,20 @@ def estimate_timestamp(meeting, quote: str) -> str | None:
         idx = hay.find(needle[:20])
     if idx < 0:
         return None
-    sec = int((idx / max(len(transcript), 1)) * dur)
+
+    sec = None
+    raw_map = getattr(meeting, "chunk_map", None)
+    if raw_map:
+        try:
+            for ch in json.loads(raw_map):
+                if ch["c0"] <= idx < ch["c0"] + max(ch["clen"], 1):
+                    frac = (idx - ch["c0"]) / max(ch["clen"], 1)
+                    sec = int(ch["t0"] + frac * ch["dur"])
+                    break
+        except Exception:  # noqa: BLE001 - bad/old map -> proportional fallback
+            sec = None
+    if sec is None:
+        sec = int((idx / max(len(transcript), 1)) * dur)
     return f"{sec // 60:02d}:{sec % 60:02d}"
 
 

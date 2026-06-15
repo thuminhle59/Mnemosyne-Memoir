@@ -40,6 +40,7 @@ class Meeting(Base):
     report_json = Column(Text)            # full MeetingReport.model_dump_json()
     transcript = Column(Text)
     duration_sec = Column(Integer, nullable=True)    # audio length, for ≈timestamps
+    chunk_map = Column(Text, nullable=True)          # JSON [{t0,c0,clen,dur}] for chunk-accurate ≈ts
     source_file = Column(String(512), nullable=True) # uploaded file name
     audio_hash = Column(String(64), index=True, nullable=True)  # same-file detection
     content_hash = Column(String(64), index=True)    # dedup re-ingest (not unique: allow "save as new")
@@ -165,6 +166,7 @@ def init_db() -> None:
     cols = [c["name"] for c in inspect(engine).get_columns("meetings")]
     add = {
         "duration_sec": "INTEGER",
+        "chunk_map": "TEXT",
         "source_file": "VARCHAR(512)",
         "audio_hash": "VARCHAR(64)",
     }
@@ -192,7 +194,7 @@ def audio_hash(data: bytes) -> str:
 
 def save_meeting(report: MeetingReport, transcript: str = "", duration_sec: int | None = None,
                  source_file: str | None = None, audio_hash_val: str | None = None,
-                 dedup: bool = True, dedup_salt: str = "") -> int:
+                 dedup: bool = True, dedup_salt: str = "", chunk_map: str | None = None) -> int:
     """Persist a meeting + its action items. With dedup=True, identical content
     (same title+date+transcript) returns the existing id. Pass dedup=False or a
     dedup_salt to force a separate row ('save as new')."""
@@ -206,8 +208,8 @@ def save_meeting(report: MeetingReport, transcript: str = "", duration_sec: int 
         m = Meeting(
             title=report.title, date=report.date, duration_min=report.duration_min,
             summary=report.summary, report_json=report.model_dump_json(),
-            transcript=transcript, duration_sec=duration_sec, source_file=source_file,
-            audio_hash=audio_hash_val, content_hash=h, created_at=_now(),
+            transcript=transcript, duration_sec=duration_sec, chunk_map=chunk_map,
+            source_file=source_file, audio_hash=audio_hash_val, content_hash=h, created_at=_now(),
         )
         s.add(m)
         s.flush()  # assign m.id

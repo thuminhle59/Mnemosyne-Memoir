@@ -193,6 +193,15 @@
             <input id="ingestFile" type="file" accept=".wav,.mp3,.m4a,.mp4,.webm,.aiff,.ogg,.txt,.md">
             <span id="ingestFileLabel">Optional audio/video upload</span>
           </label>
+          <div class="record-box">
+            <span class="record-label">Hoặc ghi trực tiếp cuộc họp của bạn</span>
+            <div class="record-actions">
+              <button type="button" id="recordTabBtn" class="ghost-btn">🔴 Ghi tab/màn hình (tiếng họp)</button>
+              <button type="button" id="recordMicBtn" class="ghost-btn">🎙 Ghi mic</button>
+              <button type="button" id="recordStopBtn" class="primary-btn" hidden>⏹ Dừng &amp; lưu</button>
+              <span id="recordStatus" class="record-status"></span>
+            </div>
+          </div>
           <div id="filePreview" class="file-preview" hidden>
             <strong>Selected media preview</strong>
             <audio id="audioPreview" controls preload="metadata" hidden></audio>

@@ -34,3 +34,6 @@ build/
 *.mp3
 *.docx
 *.pdf
+
+# Local demo media (large, do not commit)
+demo-meetings/

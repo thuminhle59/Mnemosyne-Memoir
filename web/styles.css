@@ -275,3 +275,11 @@ label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; font-weig
   .cue { display: block; }
   .speaker { margin-bottom: 8px; }
 }
+
+/* Browser recording (New meeting modal) */
+.record-box { margin-top: 10px; padding: 12px 14px; border: 1px dashed #E4DCCC;
+  border-radius: 12px; background: #FBF4EE; }
+.record-label { font-family: 'JetBrains Mono', monospace; font-size: 10.5px;
+  letter-spacing: 1px; text-transform: uppercase; color: #A39A88; }
+.record-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+.record-status { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #A8452A; }

@@ -65,6 +65,12 @@ const state = {
   glossaryCollapsed: true,
   transcriptSearch: "",
   previewUrl: null,
+  recordedFile: null,
+  recorder: null,
+  recordChunks: [],
+  recordStream: null,
+  recordTimer: null,
+  recordStartMs: 0,
   chat: [
     {
       role: "assistant",
@@ -668,9 +674,95 @@ async function sendQuestion(question) {
   renderChat();
 }
 
+function fmtRecClock(ms) {
+  const s = Math.floor(ms / 1000);
+  return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+}
+
+function setRecordingUi(active) {
+  $("recordTabBtn").hidden = active;
+  $("recordMicBtn").hidden = active;
+  $("recordStopBtn").hidden = !active;
+}
+
+function resetRecording() {
+  if (state.recorder && state.recorder.state !== "inactive") {
+    try { state.recorder.stop(); } catch (_e) {}
+  }
+  if (state.recordStream) {
+    state.recordStream.getTracks().forEach((t) => t.stop());
+    state.recordStream = null;
+  }
+  if (state.recordTimer) { clearInterval(state.recordTimer); state.recordTimer = null; }
+  state.recorder = null;
+  state.recordChunks = [];
+  state.recordedFile = null;
+  setRecordingUi(false);
+  const status = $("recordStatus");
+  if (status) status.textContent = "";
+}
+
+async function startRecording(mode) {
+  if (!navigator.mediaDevices) {
+    $("recordStatus").textContent = "Trình duyệt không hỗ trợ ghi âm.";
+    return;
+  }
+  try {
+    let stream;
+    if (mode === "tab") {
+      stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+      if (!stream.getAudioTracks().length) {
+        stream.getTracks().forEach((t) => t.stop());
+        throw new Error("Không bắt được audio — khi chia sẻ hãy tick 'Share tab audio'.");
+      }
+    } else {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    }
+    state.recordStream = stream;
+    state.recordChunks = [];
+    const audioStream = new MediaStream(stream.getAudioTracks());  // audio-only -> nhẹ
+    const mime = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "";
+    const rec = new MediaRecorder(audioStream, mime ? { mimeType: mime } : undefined);
+    rec.ondataavailable = (e) => { if (e.data && e.data.size) state.recordChunks.push(e.data); };
+    rec.onstop = onRecordingStop;
+    state.recorder = rec;
+    rec.start(1000);
+    state.recordStartMs = Date.now();
+    setRecordingUi(true);
+    $("recordStatus").textContent = "● Đang ghi 00:00";
+    state.recordTimer = setInterval(() => {
+      $("recordStatus").textContent = "● Đang ghi " + fmtRecClock(Date.now() - state.recordStartMs);
+    }, 500);
+    stream.getVideoTracks().forEach((t) => t.addEventListener("ended", stopRecording));
+  } catch (err) {
+    $("recordStatus").textContent = "Lỗi ghi: " + err.message;
+  }
+}
+
+function stopRecording() {
+  if (state.recorder && state.recorder.state !== "inactive") state.recorder.stop();
+}
+
+function onRecordingStop() {
+  if (state.recordTimer) { clearInterval(state.recordTimer); state.recordTimer = null; }
+  if (state.recordStream) { state.recordStream.getTracks().forEach((t) => t.stop()); state.recordStream = null; }
+  setRecordingUi(false);
+  const secs = Math.round((Date.now() - state.recordStartMs) / 1000);
+  const type = (state.recorder && state.recorder.mimeType) || "audio/webm";
+  const blob = new Blob(state.recordChunks, { type });
+  state.recordChunks = [];
+  if (!blob.size) { $("recordStatus").textContent = "Không ghi được dữ liệu."; return; }
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+  state.recordedFile = new File([blob], `recording-${stamp}.webm`, { type: blob.type });
+  $("recordStatus").textContent =
+    `✓ Đã ghi ${fmtRecClock(secs * 1000)} (${(blob.size / 1024 / 1024).toFixed(1)} MB) — bấm Ingest để nạp.`;
+  $("ingestFileLabel").textContent = state.recordedFile.name;
+  try { updateFilePreview(state.recordedFile); } catch (_e) {}
+}
+
 async function ingestMeeting() {
   const form = new FormData();
-  const file = $("ingestFile").files[0];
+  const file = $("ingestFile").files[0] || state.recordedFile;
   const text = $("ingestText").value.trim();
   if (!file && !text) throw new Error("Paste transcript or choose a file.");
   if (file && file.size === 0) throw new Error("Selected file is empty. Choose a different file.");
@@ -698,6 +790,7 @@ async function ingestMeeting() {
   setUploadStatus("Upload complete. Refreshing memory...");
   $("importDialog").close();
   clearFilePreview();
+  resetRecording();
   showToast(`Ingested meeting #${out.meeting_id}`);
   await loadBaseData();
   await selectMeeting(out.meeting_id);
@@ -856,11 +949,16 @@ function bindEvents() {
   $("closeImportBtn").addEventListener("click", () => {
     $("importDialog").close();
     clearFilePreview();
+    resetRecording();
   });
   $("cancelIngestBtn").addEventListener("click", () => {
     $("importDialog").close();
     clearFilePreview();
+    resetRecording();
   });
+  $("recordTabBtn").addEventListener("click", () => startRecording("tab"));
+  $("recordMicBtn").addEventListener("click", () => startRecording("mic"));
+  $("recordStopBtn").addEventListener("click", stopRecording);
   $("ingestForm").addEventListener("submit", async (event) => {
     event.preventDefault();
     setIngestBusy(true);
