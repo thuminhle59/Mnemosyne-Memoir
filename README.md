@@ -1,4 +1,4 @@
-# 🧠 Mnemosyne — ZaloPay Meeting Brain
+# Memoir - Memory Decision Agent
 
 A queryable **organizational memory** for meetings. Mnemosyne ingests meetings
 (audio or transcript), turns them into structured reports + atomic facts, and reasons
