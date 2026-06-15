@@ -4,6 +4,7 @@
 !.env.example
 .greennode.json
 .agentbase-state.json
+.gh-config/
 *.key
 *.pem
 credentials.json
