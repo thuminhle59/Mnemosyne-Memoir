@@ -11,6 +11,7 @@ Frontend: static files in ./web are served at / (SPA). All data via /api/*.
 import base64
 import json
 import os
+import re
 import shutil
 import time
 import uuid
@@ -25,6 +26,7 @@ from pydantic import BaseModel
 import config  # noqa: F401 (loads .env)
 import db
 import brain
+import media
 import report as report_mod
 
 app = FastAPI(title="Memoir API", version="1.0")
@@ -46,6 +48,31 @@ MAX_UPLOAD_BYTES = int(os.getenv("MNEMOSYNE_MAX_UPLOAD_BYTES", str(500 * 1024 * 
 UPLOAD_CHUNK_BYTES = int(os.getenv("MNEMOSYNE_UPLOAD_CHUNK_BYTES", str(16 * 1024 * 1024)))
 UPLOAD_STAGING_DIR = os.getenv("MNEMOSYNE_UPLOAD_STAGING_DIR", "/tmp/mnemosyne_uploads")
 TEXT_UPLOAD_EXTENSIONS = {".txt", ".md"}
+ACTION_STATUS_ALIASES = {
+    "pending": "mở",
+    "open": "mở",
+    "completed": "xong",
+    "complete": "xong",
+    "done": "xong",
+    "cancel": "treo",
+    "cancelled": "treo",
+    "canceled": "treo",
+    "mở": "mở",
+    "đang làm": "đang làm",
+    "xong": "xong",
+    "quá hạn": "quá hạn",
+    "treo": "treo",
+}
+ACTION_STATUSES = set(ACTION_STATUS_ALIASES.values())
+
+
+class ActionStatusBody(BaseModel):
+    status: str
+
+
+class MeetingUpdateBody(BaseModel):
+    title: str | None = None
+    source_file: str | None = None
 
 
 @app.middleware("http")
@@ -72,6 +99,7 @@ def _meeting_brief(m) -> dict:
     return {
         "id": m.id, "title": m.title, "date": m.date,
         "duration_sec": m.duration_sec, "source_file": m.source_file,
+        "can_play_audio": os.path.exists(_audio_path(m.id)),
         "created_at": _iso(m.created_at), "summary": m.summary,
     }
 
@@ -97,6 +125,49 @@ def _meeting_detail(m) -> dict:
                    "quote": f.quote, "status": f.status, "timestamp": _ts(m, f.quote)}
                   for f in facts],
     }
+
+
+def _action_detail(a) -> dict:
+    m = db.get_meeting(a.meeting_id)
+    data = a.as_dict()
+    data["timestamp"] = _ts(m, a.quote) if m else None
+    data["meeting_title"] = m.title if m else ""
+    data["date"] = m.date if m else ""
+    return data
+
+
+def _suggest_glossary_terms(m, limit: int = 12) -> list[dict]:
+    rep = m.report()
+    facts = db.facts_of_meeting(m.id)
+    text = "\n".join([
+        getattr(m, "title", "") or "",
+        getattr(m, "summary", "") or "",
+        rep.summary or "",
+        " ".join(rep.key_points or []),
+        " ".join(d.text for d in rep.decisions),
+        " ".join(a.task for a in rep.action_items),
+        " ".join(f"{f.subject} {f.statement}" for f in facts),
+        getattr(m, "transcript", "") or "",
+    ])
+    existing = {term.lower() for term in db.glossary_terms()}
+    counts: dict[str, int] = {}
+    patterns = [
+        r"\b[A-Z][A-Za-z0-9]*(?:[A-Z][A-Za-z0-9]*)+\b",
+        r"\b[A-Z]{2,}(?:\s+Server|\s+API|\s+Model|\s+Runtime)?\b",
+        r"\b[A-Z][A-Za-z0-9]+(?:\s+[A-Z][A-Za-z0-9]+){1,2}\b",
+    ]
+    stop = {"Team", "Meeting", "No", "API", "HTTP", "URL"}
+    for pattern in patterns:
+        for match in re.findall(pattern, text):
+            term = " ".join(match.split()).strip(".,:;()[]{}")
+            if len(term) < 3 or term in stop or term.lower() in existing:
+                continue
+            counts[term] = counts.get(term, 0) + 1
+    ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0].lower()))
+    return [
+        {"term": term, "reason": f"Seen {count} time{'s' if count != 1 else ''} in meeting evidence"}
+        for term, count in ranked[:limit]
+    ]
 
 
 def _is_text_upload_metadata(filename: str | None, content_type: str | None) -> bool:
@@ -131,6 +202,26 @@ def _read_upload_meta(upload_id: str) -> dict:
         return json.load(fh)
 
 
+def _audio_path(meeting_id: int) -> str:
+    return os.path.join(_WEB, "audio", f"{meeting_id}.mp3")
+
+
+def _store_playback_audio(meeting_id: int, upload: bytes | None, filename: str) -> None:
+    if not upload:
+        return
+    try:
+        os.makedirs(os.path.join(_WEB, "audio"), exist_ok=True)
+        if (filename or "").lower().endswith(".mp3"):
+            mp3 = upload
+        else:
+            mp3 = media.to_mp3(upload, filename)
+        with open(_audio_path(meeting_id), "wb") as fh:
+            fh.write(mp3)
+    except Exception:
+        # Playback is a convenience layer; ingest/transcript should still succeed.
+        return
+
+
 def _ingest_payload(
     *,
     upload: bytes | None,
@@ -161,6 +252,8 @@ def _ingest_payload(
         )
     except Exception as e:  # noqa: BLE001
         raise HTTPException(400, str(e))
+    if audio and not out.get("skipped"):
+        _store_playback_audio(out["meeting_id"], upload, filename)
     return {
         "meeting_id": out["meeting_id"],
         "skipped": out.get("skipped", False),
@@ -206,10 +299,26 @@ def meeting(meeting_id: int):
     return _meeting_detail(m)
 
 
+@app.patch("/api/meetings/{meeting_id}")
+def update_meeting(meeting_id: int, body: MeetingUpdateBody):
+    if body.title is None and body.source_file is None:
+        raise HTTPException(400, "No meeting metadata provided")
+    if not db.update_meeting_metadata(
+        meeting_id,
+        title=body.title,
+        source_file=body.source_file,
+    ):
+        raise HTTPException(404, "meeting not found")
+    m = db.get_meeting(meeting_id)
+    if not m:
+        raise HTTPException(404, "meeting not found")
+    return _meeting_brief(m)
+
+
 @app.get("/api/meetings/{meeting_id}/audio")
 def meeting_audio(meeting_id: int):
     """Serve the stored audio for listen-back (Phase 3 stores it under web/audio)."""
-    path = os.path.join(_WEB, "audio", f"{meeting_id}.mp3")
+    path = _audio_path(meeting_id)
     if not os.path.exists(path):
         raise HTTPException(404, "no audio stored for this meeting")
     return FileResponse(path, media_type="audio/mpeg")
@@ -217,7 +326,17 @@ def meeting_audio(meeting_id: int):
 
 @app.get("/api/actions")
 def actions(status: str | None = None):
-    return [a.as_dict() for a in db.all_actions(status=status)]
+    return [_action_detail(a) for a in db.all_actions(status=status)]
+
+
+@app.patch("/api/actions/{action_id}")
+def update_action(action_id: int, body: ActionStatusBody):
+    status = ACTION_STATUS_ALIASES.get(body.status.strip().lower())
+    if status not in ACTION_STATUSES:
+        raise HTTPException(400, "Invalid action status")
+    if not db.update_action_status(action_id, status):
+        raise HTTPException(404, "Action not found")
+    return {"id": action_id, "status": status}
 
 
 @app.get("/api/contradictions")
@@ -244,6 +363,14 @@ def digest(scope: str = "all"):
 @app.get("/api/glossary")
 def glossary():
     return [g.as_dict() for g in db.list_glossary()]
+
+
+@app.get("/api/glossary/suggestions")
+def glossary_suggestions(meeting_id: int):
+    m = db.get_meeting(meeting_id)
+    if not m:
+        raise HTTPException(404, "meeting not found")
+    return {"suggestions": _suggest_glossary_terms(m)}
 
 
 # ----------------------------------------------------------------- API: write
@@ -398,6 +525,9 @@ def reanalyze(meeting_id: int, body: ReanalyzeBody):
 @app.delete("/api/meetings/{meeting_id}")
 def delete_meeting(meeting_id: int):
     db.delete_meeting(meeting_id)
+    path = _audio_path(meeting_id)
+    if os.path.exists(path):
+        os.remove(path)
     return {"status": "deleted", "meeting_id": meeting_id}
 
 

@@ -7,13 +7,13 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="./styles.css?v=20260615-claude-redesign">
+    <link rel="stylesheet" href="./styles.css?v=20260615-memoir-soft-gray">
   </head>
   <body>
     <div id="app" class="app-shell">
       <header class="topbar">
         <div class="brand">
-          <span class="brand-orbit"><img class="brand-mark" src="./assets/mnemosyne-logo.png" alt="" aria-hidden="true"></span>
+          <img class="brand-mark" src="./assets/mnemosyne-logo.png" alt="" aria-hidden="true">
           <div>
             <strong>Memoir</strong>
             <small>Decision Memory</small>
@@ -21,32 +21,23 @@
         </div>
         <label class="global-search">
           <span>Search</span>
-          <input id="globalSearch" type="search" placeholder="Search decisions, contradictions, owners, evidence...">
+          <input id="globalSearch" type="search" placeholder="Search decision drift, contradictions, owners, evidence...">
         </label>
-        <button id="newMeetingBtn" class="primary-btn new-btn" type="button"><span>+</span> New meeting</button>
+        <button id="newMeetingBtn" class="primary-btn" type="button">+ New meeting</button>
       </header>
 
       <main class="workspace">
-        <aside class="sidebar library">
-          <section class="panel-section library-head">
-            <div>
-              <p>Memory sources</p>
-              <strong><b id="meetingCount">0</b> meetings</strong>
+        <aside class="sidebar">
+          <section class="panel-section">
+            <div class="section-title">
+              <span>Memory sources</span>
+              <b id="meetingCount">0</b>
             </div>
-            <button id="toggleSidebarBtn" class="sidebar-toggle" type="button" aria-label="Collapse sidebar" aria-expanded="true">‹</button>
-          </section>
-          <div class="library-search">
             <input id="librarySearch" class="input" type="search" placeholder="Filter memory sources">
-          </div>
-          <div class="time-filter" aria-label="Filter meetings by time">
-            <button class="active" type="button" data-time-filter="all">All</button>
-            <button type="button" data-time-filter="today">Today</button>
-            <button type="button" data-time-filter="week">Week</button>
-            <button type="button" data-time-filter="month">Month</button>
-          </div>
+          </section>
           <div id="meetingList" class="meeting-list scroll"></div>
-          <section class="terminology knowledge collapsed">
-            <button id="toggleGlossaryBtn" class="section-toggle knowledge-title" type="button" aria-expanded="false">
+          <section class="terminology">
+            <button id="toggleGlossaryBtn" class="section-toggle" type="button">
               <span>Terminology</span>
               <b id="termCount">0 terms</b>
             </button>
@@ -61,114 +52,139 @@
                 <button class="small-btn" type="submit">Learn guide</button>
               </form>
               <div id="glossaryList" class="term-list"></div>
-              <div id="suggestedTerms" class="suggested-terms"></div>
             </div>
           </section>
           <div class="connection-dot"><span></span>API connected through FastAPI</div>
         </aside>
 
-        <section class="content stage">
-          <div class="content-head meeting-head">
-            <div class="meta-row eyebrow" id="activeMeta">No meeting selected</div>
-            <input id="activeTitleInput" class="active-title-input" type="text" value="Memoir" aria-label="Edit meeting name">
+        <section class="content">
+          <div class="content-head">
+            <div class="meta-row" id="activeMeta">No meeting selected</div>
+            <h1 id="activeTitle">Memoir</h1>
             <p id="activeSummary" class="summary">Load meetings or ingest a transcript to start building decision memory.</p>
+            <div class="edge-strip" aria-label="Agent differentiators">
+              <span>Cross-meeting memory</span>
+              <span>Contradiction detection</span>
+              <span>Forgotten decision resurfacing</span>
+              <span>Evidence-backed Q&amp;A</span>
+            </div>
             <div class="tabs" role="tablist">
-              <a id="tabDigest" class="tab active" href="#digestView" data-tab="digest" onclick="switchTab('digest')">Executive Brief</a>
-              <a id="tabMemory" class="tab" href="#memoryView" data-tab="memory" onclick="switchTab('memory')">Memory Ops</a>
+              <a id="tabMemory" class="tab active" href="#memoryView" data-tab="memory" onclick="switchTab('memory')">Memory Ops</a>
+              <a id="tabDigest" class="tab" href="#digestView" data-tab="digest" onclick="switchTab('digest')">Executive Brief</a>
               <a id="tabTranscript" class="tab" href="#transcriptView" data-tab="transcript" onclick="switchTab('transcript')">Evidence Lab</a>
             </div>
           </div>
-
-          <div class="stage-body">
-            <div class="stage-scroll">
-              <section id="digestView" class="view scroll active">
-                <div class="signals memory-hero">
-                  <article class="radar-card signal-card red accent">
+          <section id="memoryView" class="view scroll active">
+            <div class="memory-overview">
+              <div class="ops-intro">
+                <div>
+                  <h2>Not a meeting recorder. A decision memory layer.</h2>
+                </div>
+                <p>Memoir watches how decisions mutate across meetings, flags claims that disagree, brings back forgotten commitments, and answers with evidence instead of vibes.</p>
+              </div>
+              <div class="memory-side-stack">
+                <div class="memory-hero">
+                  <article class="radar-card accent">
                     <span>Decision Drift</span>
                     <strong id="decisionDriftCount">0</strong>
                     <small>Decisions or facts that changed across meeting history</small>
                   </article>
-                  <article class="radar-card signal-card green">
+                  <article class="radar-card">
                     <span>Contradiction Radar</span>
                     <strong id="contradictionCount">0</strong>
                     <small>Conflicting claims detected before someone asks</small>
                   </article>
-                  <article class="radar-card signal-card gold">
+                  <article class="radar-card">
                     <span>Action Memory</span>
                     <strong id="openActionCount">0</strong>
                     <small>Open commitments and owner debt still being tracked</small>
                   </article>
                 </div>
-
-                <div class="toolbar">
-                  <button id="digestBtn" class="small-btn" type="button">Generate executive brief</button>
-                  <button id="followupBtn" class="small-btn" type="button">Refresh follow-up</button>
-                </div>
-                <div class="executive-grid brief-grid">
-                  <article class="brief-card scroll-card">
-                    <h2>Decisions</h2>
-                    <ul id="decisions"></ul>
+                <div class="agent-edge-grid">
+                  <article class="edge-card">
+                    <h2>Longitudinal Memory</h2>
+                    <p>Most meeting tools summarize one call. Memoir compares current claims against prior decisions.</p>
                   </article>
-                  <article class="brief-card scroll-card alert">
-                    <h2>Contradictions &amp; Forgotten Decisions</h2>
-                    <ul id="contradictionsForgotten"></ul>
+                  <article class="edge-card">
+                    <h2>Proactive Risk Signals</h2>
+                    <p>Contradictions, resurfaced rejected ideas, and open action debt are surfaced without waiting for a manual search.</p>
                   </article>
-                  <article class="brief-card scroll-card wide">
-                    <h2>Risks &amp; Blockers</h2>
-                    <ul id="risks"></ul>
+                  <article class="edge-card">
+                    <h2>Evidence-First Answers</h2>
+                    <p>Answers are designed around citations, quotes, and meeting IDs so teams can audit why the agent said something.</p>
                   </article>
                 </div>
-              </section>
-
-              <section id="memoryView" class="view scroll">
-                <article class="memory-card action-workbench">
-                  <div class="card-title-row">
-                    <h2>Actions</h2>
-                    <small>Mark commitments as pending, completed, or cancel.</small>
-                  </div>
-                  <ul id="allActions"></ul>
-                </article>
-              </section>
-
-              <section id="transcriptView" class="view scroll">
-                <div class="lab-grid">
-                  <article class="memory-card evidence-graph">
-                    <h2>Evidence Graph</h2>
-                    <ul id="facts"></ul>
-                  </article>
-                  <article class="memory-card transcript-panel">
-                    <div class="toolbar">
-                      <input id="transcriptSearch" class="input" type="search" placeholder="Filter transcript evidence">
-                      <button id="deleteMeetingBtn" class="danger-btn" type="button">Delete</button>
-                    </div>
-                    <div id="transcriptText" class="transcript-view" aria-label="Read-only transcript evidence"></div>
-                  </article>
-                </div>
-              </section>
-            </div>
-
-            <section class="player" aria-label="Meeting audio playback">
-              <button id="playerToggleBtn" class="play" type="button" aria-label="Play selected meeting" disabled></button>
-              <span id="playerTime">00:00</span>
-              <div class="wave" aria-hidden="true">
-                <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
               </div>
-              <span id="playerLabel">No audio selected</span>
-              <audio id="meetingAudio" preload="metadata" hidden></audio>
-            </section>
-          </div>
+            </div>
+            <div class="memory-grid">
+              <article>
+                <h2>Decision Ledger</h2>
+                <ul id="decisionThreads"></ul>
+              </article>
+              <article>
+                <h2>Contradiction Radar</h2>
+                <ul id="contradictionList"></ul>
+              </article>
+              <article>
+                <h2>Resurfaced Decisions</h2>
+                <ul id="resurfacedList"></ul>
+              </article>
+              <article>
+                <h2>Action Memory</h2>
+                <ul id="allActions"></ul>
+              </article>
+              <article class="wide">
+                <h2>Evidence Graph</h2>
+                <ul id="facts"></ul>
+              </article>
+            </div>
+          </section>
+
+          <section id="transcriptView" class="view scroll">
+            <div class="toolbar">
+              <input id="transcriptSearch" class="input" type="search" placeholder="Find in transcript">
+              <button id="reanalyzeBtn" class="small-btn" type="button">Reanalyze</button>
+              <button id="deleteMeetingBtn" class="danger-btn" type="button">Delete</button>
+            </div>
+            <textarea id="transcriptText" class="transcript-editor" placeholder="Transcript will appear here"></textarea>
+          </section>
+
+          <section id="digestView" class="view scroll">
+            <div class="toolbar">
+              <button id="digestBtn" class="small-btn" type="button">Generate executive brief</button>
+              <button id="followupBtn" class="small-btn" type="button">Refresh follow-up</button>
+            </div>
+            <div class="digest-grid">
+              <article>
+                <h2>Signal Brief</h2>
+                <ul id="keyPoints"></ul>
+              </article>
+              <article>
+                <h2>Current Decision State</h2>
+                <ul id="decisions"></ul>
+              </article>
+              <article>
+                <h2>Action Debt</h2>
+                <ul id="meetingActions"></ul>
+              </article>
+              <article>
+                <h2>Risks & Blockers</h2>
+                <ul id="risks"></ul>
+              </article>
+            </div>
+          </section>
         </section>
 
-        <aside class="chat qa">
-          <div class="chat-head qa-head">
+        <aside class="chat">
+          <div class="chat-head">
             <div>
               <span>Evidence Q&amp;A</span>
               <small id="chatScope">Ask across memory, not one transcript</small>
             </div>
           </div>
-          <div id="chatMessages" class="chat-messages messages scroll"></div>
+          <div id="chatMessages" class="chat-messages scroll"></div>
           <div id="suggestions" class="suggestions"></div>
-          <form id="chatForm" class="chat-form askbar">
+          <form id="chatForm" class="chat-form">
             <textarea id="chatInput" rows="1" placeholder="Ask which decision changed, who owns it, and what evidence supports it..."></textarea>
             <button class="primary-btn icon-btn" type="submit">Ask</button>
           </form>
@@ -193,11 +209,6 @@
             <input id="ingestFile" type="file" accept=".wav,.mp3,.m4a,.mp4,.webm,.aiff,.ogg,.txt,.md">
             <span id="ingestFileLabel">Optional audio/video upload</span>
           </label>
-          <div id="filePreview" class="file-preview" hidden>
-            <strong>Selected media preview</strong>
-            <audio id="audioPreview" controls preload="metadata" hidden></audio>
-            <video id="videoPreview" controls preload="metadata" playsinline hidden></video>
-          </div>
           <p id="uploadStatus" class="upload-status" role="status" aria-live="polite"></p>
           <label class="check-row"><input id="extractAudio" type="checkbox" checked> Extract audio with ffmpeg when needed</label>
           <div class="dialog-actions">
@@ -211,7 +222,7 @@
     </div>
     <script>
       window.switchTab = function switchTab(tab) {
-        if (!["digest", "memory", "transcript"].includes(tab)) return;
+        if (!["memory", "digest", "transcript"].includes(tab)) return;
         window.__MNEMOSYNE_TAB = tab;
         document.querySelectorAll(".tab").forEach((button) => {
           button.classList.toggle("active", button.dataset.tab === tab);
@@ -232,6 +243,6 @@
         window.dispatchEvent(new HashChangeEvent("hashchange"));
       }
     </script>
-    <script src="./app.js?v=20260615-claude-redesign" defer></script>
+    <script src="./app.js?v=20260615-memoir-soft-gray" defer></script>
   </body>
 </html>

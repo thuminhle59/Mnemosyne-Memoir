@@ -71,7 +71,7 @@ class Action(Base):
         return {
             "id": self.id, "meeting_id": self.meeting_id, "task": self.task,
             "owner": self.owner, "deadline": self.deadline, "priority": self.priority,
-            "status": self.status,
+            "status": self.status, "quote": self.quote,
         }
 
 
@@ -255,6 +255,23 @@ def update_transcript(meeting_id: int, transcript: str) -> None:
             s.commit()
 
 
+def update_meeting_metadata(
+    meeting_id: int,
+    title: str | None = None,
+    source_file: str | None = None,
+) -> bool:
+    with SessionLocal() as s:
+        m = s.get(Meeting, meeting_id)
+        if not m:
+            return False
+        if title is not None:
+            m.title = title.strip() or m.title
+        if source_file is not None:
+            m.source_file = source_file.strip() or m.source_file
+        s.commit()
+        return True
+
+
 def update_report(meeting_id: int, report: MeetingReport) -> None:
     """Replace a meeting's analysis (summary/report_json) and rebuild its action_items."""
     with SessionLocal() as s:
@@ -321,12 +338,14 @@ def set_fact_status(fact_id: int, status: str) -> None:
             s.commit()
 
 
-def update_action_status(action_id: int, status: str) -> None:
+def update_action_status(action_id: int, status: str) -> bool:
     with SessionLocal() as s:
         row = s.get(Action, action_id)
         if row:
             row.status = status
             s.commit()
+            return True
+        return False
 
 
 def add_action_link(action_id: int, related_meeting_id: int, note: str = "") -> int:

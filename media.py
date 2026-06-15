@@ -58,6 +58,31 @@ def to_wav(data: bytes, src_name: str = "input") -> bytes:
                 os.remove(p)
 
 
+def to_mp3(data: bytes, src_name: str = "input") -> bytes:
+    """Transcode audio/video bytes to MP3 for browser listen-back playback."""
+    exe = _ffmpeg_exe()
+    if not exe:
+        raise RuntimeError("ffmpeg không có trên máy — không thể tạo audio playback.")
+    suffix = os.path.splitext(src_name)[1] or ".bin"
+    src = dst = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
+            f.write(data)
+            src = f.name
+        dst = src + ".mp3"
+        cmd = [exe, "-y", "-i", src, "-vn", "-ac", "2", "-ar", "44100",
+               "-codec:a", "libmp3lame", "-b:a", "128k", dst]
+        proc = subprocess.run(cmd, capture_output=True, timeout=1800)
+        if proc.returncode != 0 or not os.path.exists(dst):
+            raise RuntimeError(f"ffmpeg lỗi: {proc.stderr.decode('utf-8', 'ignore')[-300:]}")
+        with open(dst, "rb") as f:
+            return f.read()
+    finally:
+        for p in (src, dst):
+            if p and os.path.exists(p):
+                os.remove(p)
+
+
 def _is_wav(data: bytes) -> bool:
     return len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WAVE"
 

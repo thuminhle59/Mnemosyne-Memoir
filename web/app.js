@@ -16,9 +16,11 @@ const API = {
   meetings: apiUrl("/api/meetings"),
   meeting: (id) => apiUrl(`/api/meetings/${id}`),
   audio: (id) => apiUrl(`/api/meetings/${id}/audio`),
+  updateMeeting: (id) => apiUrl(`/api/meetings/${id}`),
   ask: apiUrl("/api/ask"),
   ingest: apiUrl("/api/ingest"),
   actions: apiUrl("/api/actions"),
+  action: (id) => apiUrl(`/api/actions/${id}`),
   contradictions: apiUrl("/api/contradictions"),
   resurfaced: apiUrl("/api/resurfaced"),
   digest: apiUrl("/api/digest"),
@@ -27,6 +29,7 @@ const API = {
   reanalyze: (id) => apiUrl(`/api/meetings/${id}/reanalyze`),
   deleteMeeting: (id) => apiUrl(`/api/meetings/${id}`),
   glossary: apiUrl("/api/glossary"),
+  glossarySuggestions: (id) => apiUrl(`/api/glossary/suggestions?meeting_id=${id}`),
   glossaryLearn: apiUrl("/api/glossary/learn"),
   glossaryItem: (id) => apiUrl(`/api/glossary/${id}`),
 };
@@ -40,7 +43,7 @@ function currentTabFromLocation() {
     "#memoryView": "memory",
     "#digestView": "digest",
     "#transcriptView": "transcript",
-  }[window.location.hash] || window.__MNEMOSYNE_TAB || "memory";
+  }[window.location.hash] || window.__MNEMOSYNE_TAB || "digest";
 }
 
 const state = {
@@ -52,11 +55,16 @@ const state = {
   contradictions: [],
   resurfaced: [],
   glossary: [],
+  glossarySuggestions: [],
   maxUploadBytes: MAX_UPLOAD_BYTES,
   uploadChunkBytes: DEFAULT_UPLOAD_CHUNK_BYTES,
   tab: currentTabFromLocation(),
   librarySearch: "",
+  timeFilter: "all",
+  sidebarCollapsed: false,
+  glossaryCollapsed: true,
   transcriptSearch: "",
+  previewUrl: null,
   chat: [
     {
       role: "assistant",
@@ -134,6 +142,52 @@ function formatUploadLimit(bytes = state.maxUploadBytes) {
   return `${Math.floor(bytes / 1024 / 1024)} MB`;
 }
 
+function isAudioFile(file) {
+  return /^audio\//.test(file?.type || "") || /\.(wav|mp3|m4a|aiff|ogg)$/i.test(file?.name || "");
+}
+
+function isVideoFile(file) {
+  return /^video\//.test(file?.type || "") || /\.(mp4|webm)$/i.test(file?.name || "");
+}
+
+function isPlayableSourceFile(name) {
+  return /\.(wav|mp3|m4a|aiff|ogg|mp4|webm)$/i.test(name || "");
+}
+
+function clearFilePreview() {
+  const preview = $("filePreview");
+  const audio = $("audioPreview");
+  const video = $("videoPreview");
+  if (audio) {
+    audio.pause();
+    audio.removeAttribute("src");
+    audio.hidden = true;
+    audio.load();
+  }
+  if (video) {
+    video.pause();
+    video.removeAttribute("src");
+    video.hidden = true;
+    video.load();
+  }
+  if (state.previewUrl) {
+    URL.revokeObjectURL(state.previewUrl);
+    state.previewUrl = null;
+  }
+  if (preview) preview.hidden = true;
+}
+
+function updateFilePreview(file) {
+  clearFilePreview();
+  if (!file || (!isAudioFile(file) && !isVideoFile(file))) return;
+  const preview = $("filePreview");
+  const media = isVideoFile(file) ? $("videoPreview") : $("audioPreview");
+  state.previewUrl = URL.createObjectURL(file);
+  media.src = state.previewUrl;
+  media.hidden = false;
+  preview.hidden = false;
+}
+
 function fmtDate(value) {
   return value || "no date";
 }
@@ -145,9 +199,38 @@ function fmtDuration(seconds) {
   return `${mm}:${ss}`;
 }
 
+function fmtClock(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) return "00:00";
+  const mm = Math.floor(seconds / 60);
+  const ss = String(Math.floor(seconds % 60)).padStart(2, "0");
+  return `${String(mm).padStart(2, "0")}:${ss}`;
+}
+
+function parseTimestamp(value) {
+  if (!value) return null;
+  const parts = String(value).trim().split(":").map((x) => Number.parseInt(x, 10));
+  if (parts.some((x) => !Number.isFinite(x))) return null;
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  return null;
+}
+
 function listHtml(items, render) {
   if (!items || !items.length) return '<li class="empty">No items yet</li>';
   return items.map(render).join("");
+}
+
+function timestampButton(timestamp) {
+  return timestamp ? `<button class="timestamp-button" type="button" data-ts="${escapeHtml(timestamp)}">≈${escapeHtml(timestamp)}</button>` : "";
+}
+
+function renderLine(text, timestamp, detail = "") {
+  return `
+    <li class="line-item">
+      <p>${escapeHtml(text)}</p>
+      <div class="line-meta">${timestampButton(timestamp)}${detail ? `<span>${escapeHtml(detail)}</span>` : ""}</div>
+    </li>
+  `;
 }
 
 function renderStats() {
@@ -159,62 +242,251 @@ function renderMeetings() {
   const q = state.librarySearch.trim().toLowerCase();
   const meetings = state.meetings.filter((m) => {
     const text = `${m.title || ""} ${m.summary || ""} ${m.date || ""}`.toLowerCase();
-    return !q || text.includes(q);
+    return (!q || text.includes(q)) && meetingMatchesTimeFilter(m);
   });
   $("meetingList").innerHTML = meetings.length ? meetings.map((m) => `
     <div class="meeting-card ${m.id === state.activeId ? "active" : ""}" data-meeting-id="${m.id}">
-      <div class="card-meta"><span class="status-dot"></span><span>${fmtDate(m.date)}</span><span style="margin-left:auto">${fmtDuration(m.duration_sec)}</span></div>
-      <h3>${escapeHtml(m.title || `Meeting #${m.id}`)}</h3>
-      <p>${escapeHtml(m.summary || m.source_file || "No summary yet")}</p>
+      <div class="card-meta">
+        <span class="status-dot ${m.can_play_audio ? "ready" : ""}"></span>
+        <span>${fmtDate(m.date)}</span>
+        <span style="margin-left:auto">${escapeHtml(m.source_file || fmtDuration(m.duration_sec))}</span>
+        <button class="meeting-delete" type="button" data-meeting-delete="${m.id}" aria-label="Delete meeting">x</button>
+      </div>
+      <input class="meeting-title-input" data-meeting-title="${m.id}" value="${escapeHtml(m.title || `Meeting #${m.id}`)}" aria-label="Edit meeting name">
+      <p class="meeting-source-line">${escapeHtml(m.source_file || `Meeting #${m.id}`)}</p>
     </div>
   `).join("") : '<div class="meeting-card"><h3>No memory sources</h3><p>Use New meeting to ingest one.</p></div>';
 
   document.querySelectorAll("[data-meeting-id]").forEach((el) => {
-    el.addEventListener("click", () => selectMeeting(Number(el.dataset.meetingId)));
+    el.addEventListener("click", (event) => {
+      if (event.target.closest("input, button")) return;
+      selectMeeting(Number(el.dataset.meetingId));
+    });
   });
+}
+
+function meetingMatchesTimeFilter(meeting) {
+  if (state.timeFilter === "all" || !meeting.date) return true;
+  const parsed = new Date(meeting.date);
+  if (Number.isNaN(parsed.getTime())) return true;
+  const now = new Date();
+  const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  if (state.timeFilter === "today") return parsed >= startToday;
+  const startWeek = new Date(startToday);
+  startWeek.setDate(startToday.getDate() - startToday.getDay());
+  if (state.timeFilter === "week") return parsed >= startWeek;
+  const startMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  if (state.timeFilter === "month") return parsed >= startMonth;
+  return true;
 }
 
 function renderActive() {
   const m = state.active;
   $("activeMeta").textContent = m ? `${fmtDate(m.date)} · ${fmtDuration(m.duration_sec)} · #${m.id}` : "No meeting selected";
-  $("activeTitle").textContent = m ? (m.title || `Meeting #${m.id}`) : "Memoir";
+  $("activeTitleInput").value = m ? (m.title || `Meeting #${m.id}`) : "Memoir";
+  $("activeTitleInput").disabled = !m;
   $("activeSummary").textContent = m ? (m.summary || "No summary yet.") : "Load meetings or ingest a transcript to start building a cross-meeting decision memory layer.";
-  $("transcriptText").value = m ? (m.transcript || "") : "";
+  renderMeetingPlayer();
   renderDigest();
   renderMemory();
+  renderEvidence();
+}
+
+function renderMeetingPlayer() {
+  const m = state.active;
+  const audio = $("meetingAudio");
+  const button = $("playerToggleBtn");
+  const label = $("playerLabel");
+  const time = $("playerTime");
+  const canPlay = Boolean(m?.id && m.can_play_audio);
+  audio.pause();
+  button.classList.remove("playing");
+  time.textContent = "00:00";
+  if (!canPlay) {
+    audio.removeAttribute("src");
+    audio.load();
+    button.disabled = true;
+    label.textContent = m && isPlayableSourceFile(m.source_file) ? "Audio not stored; re-upload to enable playback" : (m ? "No audio for this meeting" : "No audio selected");
+    return;
+  }
+  audio.src = API.audio(m.id);
+  button.disabled = false;
+  label.textContent = m.source_file || `Meeting #${m.id}`;
+}
+
+async function toggleMeetingPlayback() {
+  const audio = $("meetingAudio");
+  const button = $("playerToggleBtn");
+  if (!audio.src || button.disabled) return;
+  try {
+    if (audio.paused) {
+      await audio.play();
+    } else {
+      audio.pause();
+    }
+  } catch (error) {
+    showToast("No stored audio available for this meeting yet.");
+  }
+}
+
+async function seekToTimestamp(timestamp) {
+  const seconds = parseTimestamp(timestamp);
+  const audio = $("meetingAudio");
+  if (seconds === null || !audio.src) {
+    showToast("No playable timestamp for this meeting.");
+    return;
+  }
+  audio.currentTime = seconds;
+  try {
+    await audio.play();
+  } catch (error) {
+    showToast("No stored audio available for this meeting yet.");
+  }
 }
 
 function renderDigest() {
   const m = state.active || {};
-  $("keyPoints").innerHTML = listHtml(m.key_points, (x) => `<li>${escapeHtml(x)}</li>`);
-  $("decisions").innerHTML = listHtml(m.decisions, (d) => `<li>${escapeHtml(d.text)}${d.timestamp ? ` <code>${escapeHtml(d.timestamp)}</code>` : ""}</li>`);
-  $("meetingActions").innerHTML = listHtml(m.action_items, (a) => `<li>${escapeHtml(a.task)}${a.owner ? ` · ${escapeHtml(a.owner)}` : ""}${a.deadline ? ` · ${escapeHtml(a.deadline)}` : ""}</li>`);
-  $("risks").innerHTML = listHtml(m.risks, (x) => `<li>${escapeHtml(x)}</li>`);
+  const facts = m.facts || [];
+  const factDecisions = facts.filter((f) => f.type === "quyết định" || f.type === "cam kết");
+  const decisionRows = [
+    ...(m.key_points || []).map((text) => ({ text, detail: "Signal brief" })),
+    ...(m.decisions || []).map((d) => ({ text: d.text, timestamp: d.timestamp, detail: "Decision" })),
+    ...factDecisions.map((f) => ({ text: `${f.subject}: ${f.statement}`, timestamp: f.timestamp, detail: `${f.type} · ${f.status}` })),
+  ];
+  const contradictionRows = [
+    ...state.contradictions.map((c) => ({
+      text: `[${c.severity}] ${c.subject}: ${c.explanation}`,
+      timestamp: c.new?.timestamp || c.old?.timestamp,
+      detail: "Contradiction",
+    })),
+    ...state.resurfaced.map((r) => ({
+      text: `${r.subject}: ${r.explanation}`,
+      timestamp: r.new?.timestamp || r.old?.timestamp,
+      detail: r.kind || "Forgotten decision",
+    })),
+  ];
+  $("decisions").innerHTML = listHtml(decisionRows, (d) => renderLine(d.text, d.timestamp, d.detail));
+  $("contradictionsForgotten").innerHTML = listHtml(contradictionRows, (r) => renderLine(r.text, r.timestamp, r.detail));
+  $("risks").innerHTML = listHtml(m.risks, (x) => renderLine(x, null, "Risk"));
 }
 
 function renderMemory() {
   const m = state.active || {};
-  const allFacts = m.facts || [];
-  const decisions = allFacts.filter((f) => f.type === "quyết định" || f.type === "cam kết");
   const openActions = state.actions.filter((a) => a.status !== "xong");
   $("decisionDriftCount").textContent = state.contradictions.length + state.resurfaced.length;
   $("contradictionCount").textContent = state.contradictions.length;
   $("openActionCount").textContent = openActions.length;
-  $("decisionThreads").innerHTML = listHtml(decisions, (f) => `
-    <li><b>${escapeHtml(f.subject)}</b><br><span>${escapeHtml(f.statement)}</span> <small>${escapeHtml(f.status)}</small></li>
-  `);
-  $("contradictionList").innerHTML = listHtml(state.contradictions, (c) => `
-    <li><b>[${escapeHtml(c.severity)}] ${escapeHtml(c.subject)}</b><br><span>${escapeHtml(c.explanation)}</span></li>
-  `);
-  $("resurfacedList").innerHTML = listHtml(state.resurfaced, (r) => `
-    <li><b>${escapeHtml(r.subject)}</b><br><span>${escapeHtml(r.explanation)}</span> <small>${escapeHtml(r.kind || "")}</small></li>
-  `);
+  const currentDecisions = (m.decisions || []).map((d) => ({ ...d, type: "decision" }));
+  const actions = state.actions.map((a) => ({ ...a, type: "action" }));
+  $("allActions").innerHTML = listHtml([...currentDecisions, ...actions], (item) => {
+    if (item.type === "decision") {
+      return `
+        <li class="decision-state">
+          <b>${escapeHtml(item.text)}</b>
+          <div class="line-meta">${timestampButton(item.timestamp)}<span>Current decision state</span></div>
+        </li>
+      `;
+    }
+    return `
+      <li>
+        <b>${escapeHtml(item.task)}</b>
+        <div class="line-meta">
+          ${timestampButton(item.timestamp)}
+          <span>${escapeHtml(item.owner || "Unassigned")} · ${escapeHtml(item.deadline || "no deadline")} · ${escapeHtml(statusLabel(item.status))}</span>
+        </div>
+        ${renderActionStatusControls(item)}
+      </li>
+    `;
+  });
+}
+
+function statusKey(status) {
+  if (status === "xong" || status === "completed") return "completed";
+  if (status === "treo" || status === "cancel" || status === "cancelled") return "cancel";
+  return "pending";
+}
+
+function statusLabel(status) {
+  return {
+    pending: "pending",
+    completed: "completed",
+    cancel: "cancel",
+  }[statusKey(status)];
+}
+
+function renderActionStatusControls(action) {
+  return `
+    <div class="action-status-controls" aria-label="Action status">
+      ${["pending", "completed", "cancel"].map((status) => `
+        <button type="button" class="${statusKey(action.status) === status ? "active" : ""}" data-action-status="${status}" data-action-id="${action.id}">
+          ${status}
+        </button>
+      `).join("")}
+    </div>
+  `;
+}
+
+function collectEvidenceMentions() {
+  const m = state.active || {};
+  const mentions = [];
+  const add = (quote, timestamp, label) => {
+    if (quote && timestamp) mentions.push({ quote: String(quote), timestamp, label });
+  };
+  (m.decisions || []).forEach((d) => add(d.quote || d.text, d.timestamp, "Decision"));
+  (m.action_items || []).forEach((a) => add(a.quote || a.task, a.timestamp, "Action"));
+  (m.facts || []).forEach((f) => add(f.quote || f.statement, f.timestamp, f.type));
+  state.contradictions.forEach((c) => {
+    add(c.new?.quote, c.new?.timestamp, "Contradiction");
+    add(c.old?.quote, c.old?.timestamp, "Contradiction");
+  });
+  state.resurfaced.forEach((r) => {
+    add(r.new?.quote, r.new?.timestamp, "Forgotten");
+    add(r.old?.quote, r.old?.timestamp, "Forgotten");
+  });
+  return mentions;
+}
+
+function highlightQuery(text, query) {
+  const safe = escapeHtml(text);
+  if (!query) return safe;
+  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return safe.replace(new RegExp(escaped, "ig"), (match) => `<mark>${match}</mark>`);
+}
+
+function renderTranscriptEvidence() {
+  const transcript = state.active?.transcript || "";
+  const query = state.transcriptSearch.trim();
+  const mentions = collectEvidenceMentions();
+  const lines = transcript.split(/\n+/).filter((line) => line.trim());
+  const rows = lines.length ? lines : [transcript || "No transcript selected."];
+  const filtered = rows.filter((line) => {
+    if (!query) return true;
+    return line.toLowerCase().includes(query.toLowerCase());
+  });
+  $("transcriptText").innerHTML = filtered.map((line) => {
+    const hit = mentions.find((m) => {
+      const quote = m.quote.toLowerCase();
+      const text = line.toLowerCase();
+      return quote.includes(text.slice(0, 80)) || text.includes(quote.slice(0, 80));
+    });
+    return `
+      <div class="transcript-line">
+        <div class="line-meta">${hit ? timestampButton(hit.timestamp) : ""}${hit ? `<span>${escapeHtml(hit.label)}</span>` : ""}</div>
+        <div>${highlightQuery(line, query)}</div>
+      </div>
+    `;
+  }).join("");
+}
+
+function renderEvidence() {
+  const allFacts = state.active?.facts || [];
   $("facts").innerHTML = listHtml(allFacts, (f) => `
-    <li><b>${escapeHtml(f.subject)}</b>: ${escapeHtml(f.statement)} <small>${escapeHtml(f.type)} · ${escapeHtml(f.status)}</small></li>
+    <li class="line-item">
+      <p><b>${escapeHtml(f.subject)}</b>: ${escapeHtml(f.statement)}</p>
+      <div class="line-meta">${timestampButton(f.timestamp)}<span>${escapeHtml(f.type)} · ${escapeHtml(f.status)}</span></div>
+    </li>
   `);
-  $("allActions").innerHTML = listHtml(openActions, (a) => `
-    <li><b>${escapeHtml(a.task)}</b><br><small>${escapeHtml(a.owner || "Unassigned")} · ${escapeHtml(a.deadline || "no deadline")} · ${escapeHtml(a.status || "mở")}</small></li>
-  `);
+  renderTranscriptEvidence();
 }
 
 function renderGlossary() {
@@ -227,7 +499,35 @@ function renderGlossary() {
   document.querySelectorAll("[data-term-delete]").forEach((btn) => {
     btn.addEventListener("click", () => deleteTerm(Number(btn.dataset.termDelete)));
   });
+  renderGlossarySuggestions();
+  renderGlossaryPanelState();
   renderStats();
+}
+
+function renderGlossaryPanelState() {
+  const section = document.querySelector(".terminology");
+  const button = $("toggleGlossaryBtn");
+  if (!section || !button) return;
+  section.classList.toggle("collapsed", state.glossaryCollapsed);
+  button.setAttribute("aria-expanded", String(!state.glossaryCollapsed));
+}
+
+function renderGlossarySuggestions() {
+  const box = $("suggestedTerms");
+  if (!box) return;
+  if (!state.activeId) {
+    box.innerHTML = "";
+    return;
+  }
+  box.innerHTML = `
+    <div class="suggested-title">Suggested terms</div>
+    ${state.glossarySuggestions.length ? state.glossarySuggestions.map((item) => `
+      <button class="suggested-term" type="button" data-suggested-term="${escapeHtml(item.term)}">
+        <span>${escapeHtml(item.term)}</span>
+        <small>${escapeHtml(item.reason || "Found in this meeting")}</small>
+      </button>
+    `).join("") : '<div class="suggested-empty">No new terms found</div>'}
+  `;
 }
 
 function renderChat() {
@@ -260,20 +560,31 @@ function renderSuggestions() {
 
 function renderTabs() {
   state.tab = window.__MNEMOSYNE_TAB || state.tab;
-  ["transcript", "digest", "memory"].forEach((key) => {
+  ["digest", "memory", "transcript"].forEach((key) => {
     document.querySelector(`[data-tab="${key}"]`)?.classList.toggle("active", state.tab === key);
     $(`${key}View`)?.classList.toggle("active", state.tab === key);
   });
 }
 
 function switchTab(tab) {
-  if (!["transcript", "digest", "memory"].includes(tab)) return;
+  if (!["digest", "memory", "transcript"].includes(tab)) return;
   window.__MNEMOSYNE_TAB = tab;
   state.tab = tab;
   renderTabs();
 }
 
 window.switchTab = switchTab;
+
+function toggleSidebar() {
+  state.sidebarCollapsed = !state.sidebarCollapsed;
+  $("app").classList.toggle("sidebar-collapsed", state.sidebarCollapsed);
+  const button = $("toggleSidebarBtn");
+  if (button) {
+    button.textContent = state.sidebarCollapsed ? "›" : "‹";
+    button.setAttribute("aria-label", state.sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar");
+    button.setAttribute("aria-expanded", String(!state.sidebarCollapsed));
+  }
+}
 
 function renderAll() {
   renderStats();
@@ -311,7 +622,38 @@ async function loadBaseData() {
 async function selectMeeting(id, rerender = true) {
   state.activeId = id;
   state.active = await request(API.meeting(id));
+  await loadGlossarySuggestions(id);
   if (rerender) renderAll();
+}
+
+async function loadGlossarySuggestions(id = state.activeId) {
+  if (!id) {
+    state.glossarySuggestions = [];
+    return;
+  }
+  try {
+    const out = await request(API.glossarySuggestions(id));
+    state.glossarySuggestions = out.suggestions || [];
+  } catch (_) {
+    state.glossarySuggestions = [];
+  }
+}
+
+async function updateMeetingName(id, title) {
+  const clean = title.trim();
+  if (!id || !clean) return;
+  const out = await request(API.updateMeeting(id), {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title: clean, source_file: clean }),
+  });
+  state.meetings = state.meetings.map((m) => (m.id === id ? { ...m, ...out } : m));
+  if (state.activeId === id) {
+    state.active = { ...state.active, ...out };
+  }
+  renderMeetings();
+  renderActive();
+  showToast("Meeting name updated");
 }
 
 async function sendQuestion(question) {
@@ -355,6 +697,7 @@ async function ingestMeeting() {
   }
   setUploadStatus("Upload complete. Refreshing memory...");
   $("importDialog").close();
+  clearFilePreview();
   showToast(`Ingested meeting #${out.meeting_id}`);
   await loadBaseData();
   await selectMeeting(out.meeting_id);
@@ -396,7 +739,7 @@ async function reanalyzeActive() {
   await request(API.reanalyze(state.activeId), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ transcript: $("transcriptText").value }),
+    body: JSON.stringify({ transcript: $("transcriptText").textContent }),
   });
   showToast("Reanalyzed transcript");
   await selectMeeting(state.activeId);
@@ -409,6 +752,20 @@ async function deleteActive() {
   await request(API.deleteMeeting(state.activeId), { method: "DELETE" });
   state.activeId = null;
   state.active = null;
+  await loadBaseData();
+  showToast("Meeting deleted");
+}
+
+async function deleteMeetingById(id) {
+  if (!id) return;
+  const meeting = state.meetings.find((m) => m.id === id);
+  const title = meeting?.title || `meeting #${id}`;
+  if (!window.confirm(`Delete ${title}?`)) return;
+  await request(API.deleteMeeting(id), { method: "DELETE" });
+  if (state.activeId === id) {
+    state.activeId = null;
+    state.active = null;
+  }
   await loadBaseData();
   showToast("Meeting deleted");
 }
@@ -432,6 +789,17 @@ async function runFollowup() {
   showToast("Action statuses refreshed");
 }
 
+async function updateActionStatus(id, status) {
+  await request(API.action(id), {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status }),
+  });
+  state.actions = await request(API.actions);
+  renderMemory();
+  showToast("Action status updated");
+}
+
 async function addTerm(event) {
   event.preventDefault();
   const term = $("termInput").value.trim();
@@ -445,13 +813,28 @@ async function addTerm(event) {
   $("termInput").value = "";
   $("wrongInput").value = "";
   state.glossary = await request(API.glossary);
+  await loadGlossarySuggestions();
   renderGlossary();
 }
 
 async function deleteTerm(id) {
   await request(API.glossaryItem(id), { method: "DELETE" });
   state.glossary = await request(API.glossary);
+  await loadGlossarySuggestions();
   renderGlossary();
+}
+
+async function addSuggestedTerm(term) {
+  if (!term) return;
+  await request(API.glossary, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ term, wrong: null }),
+  });
+  state.glossary = await request(API.glossary);
+  await loadGlossarySuggestions();
+  renderGlossary();
+  showToast(`Learned ${term}`);
 }
 
 async function learnGuide(event) {
@@ -462,14 +845,22 @@ async function learnGuide(event) {
   form.append("file", file);
   const out = await request(API.glossaryLearn, { method: "POST", body: form });
   state.glossary = await request(API.glossary);
+  await loadGlossarySuggestions();
   renderGlossary();
   showToast(`Learned ${(out.terms || []).length} terms`);
 }
 
 function bindEvents() {
   $("newMeetingBtn").addEventListener("click", () => $("importDialog").showModal());
-  $("closeImportBtn").addEventListener("click", () => $("importDialog").close());
-  $("cancelIngestBtn").addEventListener("click", () => $("importDialog").close());
+  $("toggleSidebarBtn").addEventListener("click", toggleSidebar);
+  $("closeImportBtn").addEventListener("click", () => {
+    $("importDialog").close();
+    clearFilePreview();
+  });
+  $("cancelIngestBtn").addEventListener("click", () => {
+    $("importDialog").close();
+    clearFilePreview();
+  });
   $("ingestForm").addEventListener("submit", async (event) => {
     event.preventDefault();
     setIngestBusy(true);
@@ -486,6 +877,7 @@ function bindEvents() {
   $("ingestFile").addEventListener("change", () => {
     const file = $("ingestFile").files[0];
     $("ingestFileLabel").textContent = file ? `${file.name} · ${(file.size / 1024 / 1024).toFixed(1)} MB` : "Optional audio/video upload";
+    updateFilePreview(file);
     if (file && file.size === 0) {
       setUploadStatus("This file is empty. Choose another file.");
     } else if (file && file.size > state.maxUploadBytes) {
@@ -505,22 +897,82 @@ function bindEvents() {
     $("librarySearch").value = event.target.value;
     renderMeetings();
   });
-  $("transcriptSearch").addEventListener("input", (event) => {
-    state.transcriptSearch = event.target.value;
-    const txt = $("transcriptText");
-    const q = state.transcriptSearch;
-    if (q) {
-      const idx = txt.value.toLowerCase().indexOf(q.toLowerCase());
-      if (idx >= 0) {
-        txt.focus();
-        txt.setSelectionRange(idx, idx + q.length);
-      }
+  document.querySelectorAll("[data-time-filter]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.timeFilter = button.dataset.timeFilter;
+      document.querySelectorAll("[data-time-filter]").forEach((item) => {
+        item.classList.toggle("active", item.dataset.timeFilter === state.timeFilter);
+      });
+      renderMeetings();
+    });
+  });
+  $("activeTitleInput").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      event.target.blur();
     }
   });
-  $("reanalyzeBtn").addEventListener("click", () => reanalyzeActive().catch((e) => showToast(e.message)));
+  $("activeTitleInput").addEventListener("blur", (event) => {
+    updateMeetingName(state.activeId, event.target.value).catch((e) => showToast(e.message));
+  });
+  $("transcriptSearch").addEventListener("input", (event) => {
+    state.transcriptSearch = event.target.value;
+    renderTranscriptEvidence();
+  });
+  $("reanalyzeBtn")?.addEventListener("click", () => reanalyzeActive().catch((e) => showToast(e.message)));
   $("deleteMeetingBtn").addEventListener("click", () => deleteActive().catch((e) => showToast(e.message)));
   $("digestBtn").addEventListener("click", () => generateDigest().catch((e) => showToast(e.message)));
   $("followupBtn").addEventListener("click", () => runFollowup().catch((e) => showToast(e.message)));
+  $("playerToggleBtn").addEventListener("click", () => toggleMeetingPlayback());
+  $("meetingAudio").addEventListener("play", () => $("playerToggleBtn").classList.add("playing"));
+  $("meetingAudio").addEventListener("pause", () => $("playerToggleBtn").classList.remove("playing"));
+  $("meetingAudio").addEventListener("ended", () => $("playerToggleBtn").classList.remove("playing"));
+  $("meetingAudio").addEventListener("timeupdate", (event) => {
+    $("playerTime").textContent = fmtClock(event.target.currentTime);
+  });
+  $("meetingAudio").addEventListener("error", () => {
+    $("playerToggleBtn").classList.remove("playing");
+    showToast("Audio playback is not available for this meeting.");
+  });
+  document.addEventListener("click", (event) => {
+    const meetingDelete = event.target.closest("[data-meeting-delete]");
+    if (meetingDelete) {
+      event.preventDefault();
+      event.stopPropagation();
+      deleteMeetingById(Number(meetingDelete.dataset.meetingDelete)).catch((e) => showToast(e.message));
+      return;
+    }
+    const suggested = event.target.closest("[data-suggested-term]");
+    if (suggested) {
+      event.preventDefault();
+      addSuggestedTerm(suggested.dataset.suggestedTerm).catch((e) => showToast(e.message));
+      return;
+    }
+    const ts = event.target.closest("[data-ts]");
+    if (ts) {
+      event.preventDefault();
+      seekToTimestamp(ts.dataset.ts);
+      return;
+    }
+    const status = event.target.closest("[data-action-status]");
+    if (status) {
+      event.preventDefault();
+      updateActionStatus(Number(status.dataset.actionId), status.dataset.actionStatus).catch((e) => showToast(e.message));
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    const input = event.target.closest("[data-meeting-title]");
+    if (input && event.key === "Enter") {
+      event.preventDefault();
+      input.blur();
+    }
+  });
+  document.addEventListener("blur", (event) => {
+    const input = event.target.closest("[data-meeting-title]");
+    if (input) {
+      updateMeetingName(Number(input.dataset.meetingTitle), input.value).catch((e) => showToast(e.message));
+    }
+  }, true);
   $("chatForm").addEventListener("submit", async (event) => {
     event.preventDefault();
     const input = $("chatInput");
@@ -537,7 +989,8 @@ function bindEvents() {
   $("glossaryForm").addEventListener("submit", addTerm);
   $("guideForm").addEventListener("submit", learnGuide);
   $("toggleGlossaryBtn").addEventListener("click", () => {
-    $("glossaryPanel").hidden = !$("glossaryPanel").hidden;
+    state.glossaryCollapsed = !state.glossaryCollapsed;
+    renderGlossaryPanelState();
   });
   document.querySelectorAll(".tabs [data-tab]").forEach((button) => {
     button.addEventListener("click", () => switchTab(button.dataset.tab));

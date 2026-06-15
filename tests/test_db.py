@@ -117,6 +117,16 @@ def test_audio_hash_lookup():
     assert found is not None and found.id == mid
 
 
+def test_update_meeting_metadata_changes_title_and_source_file():
+    mid = db.save_meeting(_report(title="Old title"), source_file="old.mp3")
+
+    assert db.update_meeting_metadata(mid, title="New title", source_file="renamed.mp3")
+
+    meeting = db.get_meeting(mid)
+    assert meeting.title == "New title"
+    assert meeting.source_file == "renamed.mp3"
+
+
 def test_counts():
     mid = db.save_meeting(_report(actions=[ActionItem(task="A")]))
     db.save_facts(mid, [KnowledgeFact(type="fact", subject="s", statement="x")])
