@@ -11,7 +11,7 @@ import uuid
 import config
 
 
-def apply_corrections(text: str) -> str:
+def apply_corrections(text: str, owner_id: str | None = None) -> str:
     """Deterministic regex cleanup, run AFTER the LLM correction (brain.correct_terms):
       NORMALIZE  — always: canonical spelling (ZaloPay, AgentBase...).
       TERM FIXES — if STT_FIX_TERMS: mis-heard word -> proper noun
@@ -24,16 +24,16 @@ def apply_corrections(text: str) -> str:
         for pattern, repl in config.STT_TERM_FIXES:
             text = re.sub(pattern, repl, text, flags=re.IGNORECASE)
         # user-taught mappings from the org glossary (wrong -> correct)
-        for wrong, term in _glossary_fixes():
+        for wrong, term in _glossary_fixes(owner_id=owner_id):
             pat = r"\b" + re.escape(wrong).replace(r"\ ", r"[\s-]?") + r"\b"
             text = re.sub(pat, term, text, flags=re.IGNORECASE)
     return text
 
 
-def _glossary_fixes() -> list[tuple[str, str]]:
+def _glossary_fixes(owner_id: str | None = None) -> list[tuple[str, str]]:
     try:
         import db
-        return db.glossary_fixes()
+        return db.glossary_fixes(owner_id=owner_id)
     except Exception:  # noqa: BLE001 - DB not ready / no glossary
         return []
 

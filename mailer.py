@@ -21,10 +21,19 @@ def _enabled() -> bool:
 
 
 def _deliver(msg: EmailMessage) -> bool:
-    """Open an SMTP connection and send `msg`. Returns True on success."""
+    """Open an SMTP connection and send `msg`. Returns True on success.
+
+    Uses implicit TLS (SMTP_SSL, e.g. port 465) when config.SMTP_SSL is set,
+    otherwise plain SMTP + STARTTLS (e.g. port 587).
+    """
     try:
-        with smtplib.SMTP(config.SMTP_HOST, config.SMTP_PORT) as s:
-            s.starttls()
+        if config.SMTP_SSL:
+            s = smtplib.SMTP_SSL(config.SMTP_HOST, config.SMTP_PORT)
+        else:
+            s = smtplib.SMTP(config.SMTP_HOST, config.SMTP_PORT)
+        with s:
+            if not config.SMTP_SSL:
+                s.starttls()
             if config.SMTP_USER:
                 s.login(config.SMTP_USER, config.SMTP_PASS)
             s.send_message(msg)
@@ -107,7 +116,7 @@ def send_assignment(action, to: str, note: str | None = None,
         lines.append(f"  • Từ cuộc họp: {meeting_title}")
     if note:
         lines += ["", f"Ghi chú: {note}"]
-    subject = f"[Memoir] Bạn được giao việc: {action.task[:60]}"
+    subject = "[Memoir] Bạn được giao việc"
     return send_text(subject, "\n".join(lines), to=[to])
 
 

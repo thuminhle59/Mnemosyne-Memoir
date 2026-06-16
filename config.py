@@ -77,7 +77,8 @@ STT_LLM_CORRECT = os.getenv("STT_LLM_CORRECT", "true").lower() == "true"
 STT_CORRECT_MODEL = os.getenv("STT_CORRECT_MODEL", "google/gemma-4-31b-it")
 STT_GLOSSARY = os.getenv(
     "STT_GLOSSARY",
-    "Claw-a-thon, GreenNode, ZaloPay, AgentBase, OpenClaw, Mnemosyne",
+    "Claw-a-thon, GreenNode, ZaloPay, AgentBase, OpenClaw, Mnemosyne, "
+    "Merchant, MCP Server, QA, UAT, API, Pilot, Canary, Settlement",
 )
 
 # --- Memory store (SQLAlchemy; SQLite local for demo, Postgres via env later) ---
@@ -87,6 +88,9 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///mnemosyne.db")
 EMAIL_ENABLED = os.getenv("EMAIL_ENABLED", "false").lower() == "true"
 SMTP_HOST = os.getenv("SMTP_HOST", "")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+# Implicit TLS (SMTP over SSL, usually port 465) instead of STARTTLS (587).
+# Auto-on for port 465; some networks block the STARTTLS upgrade but allow 465.
+SMTP_SSL = os.getenv("SMTP_SSL", "").lower() == "true" or SMTP_PORT == 465
 SMTP_USER = os.getenv("SMTP_USER", "")
 SMTP_PASS = os.getenv("SMTP_PASS", "")
 EMAIL_FROM = os.getenv("EMAIL_FROM", SMTP_USER)

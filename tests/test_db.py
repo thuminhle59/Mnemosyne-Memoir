@@ -127,6 +127,31 @@ def test_update_meeting_metadata_changes_title_and_source_file():
     assert meeting.source_file == "renamed.mp3"
 
 
+def test_update_meeting_metadata_can_store_group_title_without_renaming_meeting():
+    mid = db.save_meeting(_report(title="Nova Portal - Meeting 1"))
+
+    assert db.update_meeting_metadata(mid, group_title="Nova Portal")
+
+    meeting = db.get_meeting(mid)
+    assert meeting.title == "Nova Portal - Meeting 1"
+    assert meeting.group_title == "Nova Portal"
+
+
+def test_rename_group_updates_all_meetings_in_old_group_only():
+    first = db.save_meeting(_report(title="Nova Portal - Meeting 1"))
+    second = db.save_meeting(_report(title="Nova Portal - Meeting 2"))
+    other = db.save_meeting(_report(title="Claw-a-thon - Meeting 1"))
+    db.update_meeting_metadata(first, group_title="Nova Portal")
+    db.update_meeting_metadata(second, group_title="Nova Portal")
+    db.update_meeting_metadata(other, group_title="Claw-a-thon")
+
+    assert db.rename_meeting_group("Nova Portal", "Merchant Portal") == 2
+
+    assert db.get_meeting(first).group_title == "Merchant Portal"
+    assert db.get_meeting(second).group_title == "Merchant Portal"
+    assert db.get_meeting(other).group_title == "Claw-a-thon"
+
+
 def test_rename_meeting_syncs_report_title_for_export():
     # Export reads report_json (m.report()), so renaming must propagate there too,
     # otherwise the file keeps the original ingest title.

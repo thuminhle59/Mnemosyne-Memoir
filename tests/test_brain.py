@@ -1,10 +1,12 @@
 """Tests for extract_facts, detect_contradictions, ingest, retrieve (mock LLM)."""
 import json
 
+import analyze
 import db
 import brain
+import media
 import retrieve as retrieve_mod
-from models import MeetingReport, ActionItem, KnowledgeFact
+from models import MeetingReport, ActionItem, KnowledgeFact, Decision
 
 
 def _report(title="Họp", date="2026-06-02", summary="tóm tắt", actions=None, transcript="nội dung họp"):
@@ -13,6 +15,71 @@ def _report(title="Họp", date="2026-06-02", summary="tóm tắt", actions=None
 
 
 # ---------------------------------------------------------------- extract_facts
+
+def test_analysis_prompts_preserve_english_terms_and_proper_nouns():
+    transcript = "Team Merchant nói AgentBase, OpenClaw, MCP Server, QA và UAT."
+    analysis_prompt = analyze._prompt(transcript, "2026-06-16")
+    facts_prompt = brain._facts_prompt(_report(summary="AgentBase and OpenClaw"), transcript)
+
+    for prompt in [analysis_prompt, facts_prompt]:
+        assert "GIỮ NGUYÊN chính xác tiếng Anh" in prompt
+        assert "KHÔNG phiên âm" in prompt
+        assert "Merchant, AgentBase, OpenClaw, MCP Server, QA, UAT" in prompt
+
+
+def test_analysis_and_fact_prompts_allow_summary_like_decisions_without_quotes():
+    transcript = "Cả nhóm thống nhất triển khai Pilot trước, Full Rollout chờ sau."
+    analysis_prompt = analyze._prompt(transcript, "2026-06-16")
+    facts_prompt = brain._facts_prompt(
+        _report(summary="Cuộc họp chốt triển khai Pilot trước Full Rollout."),
+        transcript,
+    )
+
+    assert '"decisions": [{"text": str, "quote": null}]' in analysis_prompt
+    assert "decision có thể là câu tổng hợp giống summary" in analysis_prompt
+    assert "KHÔNG cần quote gốc cho decisions" in analysis_prompt
+    assert "ĐƯỢC trích fact hoặc quyết định từ phần Tóm tắt" in facts_prompt
+    assert "quote có thể là null" in facts_prompt
+
+
+def test_analysis_prompt_requests_structured_summary_brief():
+    prompt = analyze._prompt("Transcript", "2026-06-16")
+
+    assert '"summary_brief"' in prompt
+    assert '"context": str|null' in prompt
+    assert '"decisions": [str]' in prompt
+    assert '"risk": str|null' in prompt
+    assert '"next_step": str|null' in prompt
+    assert "Context: đúng 1 câu" in prompt
+    assert "Decisions: tối đa 2 câu" in prompt
+    assert "Risks: đúng 1 câu" in prompt
+    assert "Next steps: đúng 1 câu" in prompt
+
+
+def test_meeting_report_normalizes_summary_brief_limits_and_fallbacks():
+    report = MeetingReport.model_validate({
+        "title": "Họp Pilot",
+        "date": "2026-06-16",
+        "summary": "Cuộc họp chốt Pilot. Câu phụ.",
+        "summary_brief": {
+            "context": "",
+            "decisions": ["Mở Pilot", "Không Full Rollout", "Bỏ câu thứ ba"],
+            "risk": "",
+            "next_step": "",
+        },
+        "decisions": [
+            {"text": "Mở Pilot", "quote": None},
+            {"text": "Không Full Rollout", "quote": None},
+        ],
+        "action_items": [{"task": "Gửi checklist", "owner": "An", "deadline": None}],
+        "risks": ["Latency còn cao"],
+    })
+
+    assert report.summary_brief.context == "Cuộc họp chốt Pilot."
+    assert report.summary_brief.decisions == ["Mở Pilot", "Không Full Rollout"]
+    assert report.summary_brief.risk == "Latency còn cao"
+    assert report.summary_brief.next_step == "Gửi checklist"
+
 
 def test_extract_facts_parses_factlist(monkeypatch):
     payload = {"facts": [
@@ -62,6 +129,47 @@ def test_ingest_saves_meeting_facts_and_runs_contradiction(monkeypatch):
     saved = db.all_facts()
     assert saved[0].subject == "ngày launch"
     assert saved[0].meeting_id == out["meeting_id"]
+
+
+def test_reingesting_same_audio_reuses_existing_analysis_for_stable_decisions(monkeypatch):
+    calls = {"analyze": 0, "facts": 0}
+
+    def fake_analyze(transcript, date):
+        calls["analyze"] += 1
+        return _report(
+            title="Original",
+            date=date,
+            transcript=transcript,
+        ).model_copy(update={
+            "decisions": [Decision(text=f"Decision version {calls['analyze']}", quote="quote")]
+        })
+
+    def fake_extract(report, transcript):
+        calls["facts"] += 1
+        return [KnowledgeFact(type="quyết định", subject="scope", statement=report.decisions[0].text, quote="quote")]
+
+    monkeypatch.setattr(media, "audio_to_wav_chunks", lambda audio, filename, chunk_sec, do_extract: [b"wav"])
+    monkeypatch.setattr(media, "wav_duration", lambda chunk: 12.0)
+    monkeypatch.setattr(brain.transcribe, "transcribe", lambda *a, **k: "transcript")
+    monkeypatch.setattr(brain, "correct_terms", lambda text: text)
+    monkeypatch.setattr(brain.transcribe, "apply_corrections", lambda text: text)
+    monkeypatch.setattr(brain.analyze, "analyze", fake_analyze)
+    monkeypatch.setattr(brain, "extract_facts", fake_extract)
+    monkeypatch.setattr(brain, "detect_contradictions", lambda facts: [])
+    monkeypatch.setattr(brain, "detect_forgotten_decisions", lambda facts: [])
+
+    first = brain.ingest(audio=b"same raw file", date="2026-06-16", title="First", on_duplicate="new")
+    second = brain.ingest(audio=b"same raw file", date="2026-06-16", title="Second", on_duplicate="new")
+
+    assert first["meeting_id"] != second["meeting_id"]
+    assert first["report"].decisions[0].text == "Decision version 1"
+    assert second["report"].decisions[0].text == "Decision version 1"
+    assert second["duplicate_of"] == first["meeting_id"]
+    assert calls == {"analyze": 1, "facts": 1}
+    assert [m.report().decisions[0].text for m in db.list_meetings(limit=10)] == [
+        "Decision version 1",
+        "Decision version 1",
+    ]
 
 
 def test_reanalyze_replaces_report_and_facts(monkeypatch):
@@ -189,10 +297,116 @@ def test_correct_terms_guardrail_rejects_over_edit(monkeypatch):
     assert brain.correct_terms(original) == original
 
 
+def test_correct_terms_guardrail_preserves_unknown_proper_nouns(monkeypatch):
+    monkeypatch.setattr(brain.config, "STT_LLM_CORRECT", True)
+    original = "Team Nova Portal đang chuẩn bị pilot settlement."
+    monkeypatch.setattr(brain.llm, "chat", lambda prompt, model, **k: json.dumps(
+        {"corrected": "Team OpenClaw Portal đang chuẩn bị pilot settlement."}))
+
+    assert brain.correct_terms(original) == original
+
+
 def test_correct_terms_disabled_returns_original(monkeypatch):
     monkeypatch.setattr(brain.config, "STT_LLM_CORRECT", False)
     s = "bất kỳ transcript nào"
     assert brain.correct_terms(s) == s
+
+
+def test_apply_glossary_to_meeting_reanalyzes_when_transcript_changes(monkeypatch):
+    class Meeting:
+        id = 7
+        transcript = "CloudTown sync"
+
+    captured = {}
+    monkeypatch.setattr(brain.db, "get_meeting", lambda meeting_id: Meeting())
+    monkeypatch.setattr(brain, "correct_terms", lambda text: text)
+    monkeypatch.setattr(brain.transcribe, "apply_corrections", lambda text: text.replace("CloudTown", "Claw-a-thon"))
+    monkeypatch.setattr(brain, "reanalyze", lambda meeting_id, transcript: captured.setdefault("out", {
+        "meeting_id": meeting_id,
+        "report": None,
+        "facts": [],
+        "contradictions": [],
+        "forgotten": [],
+        "transcript": transcript,
+    }))
+
+    out = brain.apply_glossary_to_meeting(7)
+
+    assert out["changed"] is True
+    assert captured["out"]["transcript"] == "Claw-a-thon sync"
+
+
+def test_apply_glossary_to_meeting_refreshes_analysis_when_no_mapping_matches(monkeypatch):
+    class Meeting:
+        id = 7
+        transcript = "No glossary miss here"
+
+    called = {"reanalyze": False, "transcript": None}
+    monkeypatch.setattr(brain.db, "get_meeting", lambda meeting_id: Meeting())
+    monkeypatch.setattr(brain, "correct_terms", lambda text: text)
+    monkeypatch.setattr(brain.transcribe, "apply_corrections", lambda text: text)
+
+    def fake_reanalyze(meeting_id, transcript):
+        called.update(reanalyze=True, transcript=transcript)
+        return {
+            "meeting_id": meeting_id,
+            "report": None,
+            "facts": [],
+            "contradictions": [],
+            "forgotten": [],
+        }
+
+    monkeypatch.setattr(brain, "reanalyze", fake_reanalyze)
+
+    out = brain.apply_glossary_to_meeting(7)
+
+    assert out["changed"] is False
+    assert called["reanalyze"] is True
+    assert called["transcript"] == "No glossary miss here"
+
+
+def test_apply_glossary_to_meeting_normalizes_report_facts_and_title_after_reanalysis(monkeypatch):
+    db.add_glossary("Claw-a-thon", wrong="CloudTown")
+    mid = db.save_meeting(
+        _report(title="CloudTown - Họp", summary="CloudTown summary", transcript="CloudTown transcript"),
+        transcript="CloudTown transcript",
+    )
+
+    monkeypatch.setattr(brain, "correct_terms", lambda text: text)
+    monkeypatch.setattr(brain.analyze, "analyze", lambda transcript, date: _report(
+        title="CloudTown - Họp",
+        date=date,
+        summary="CloudTown summary",
+        actions=[ActionItem(task="CloudTown action", owner="CloudTown owner", quote="CloudTown quote")],
+        transcript=transcript,
+    ).model_copy(update={
+        "decisions": [Decision(text="CloudTown decision", quote=None)],
+        "risks": ["CloudTown risk"],
+        "key_points": ["CloudTown key point"],
+    }))
+    monkeypatch.setattr(brain, "extract_facts", lambda report, transcript: [
+        KnowledgeFact(type="fact", subject="CloudTown subject", statement="CloudTown fact", quote="CloudTown quote")
+    ])
+    monkeypatch.setattr(brain, "detect_contradictions", lambda facts: [])
+    monkeypatch.setattr(brain, "detect_forgotten_decisions", lambda facts: [])
+
+    out = brain.apply_glossary_to_meeting(mid)
+
+    meeting = db.get_meeting(mid)
+    report = meeting.report()
+    facts = db.facts_of_meeting(mid)
+    actions = db.all_actions()
+    assert out["changed"] is True
+    assert meeting.title == "Claw-a-thon - Họp"
+    assert meeting.transcript == "Claw-a-thon transcript"
+    assert report.summary == "Claw-a-thon summary"
+    assert report.decisions[0].text == "Claw-a-thon decision"
+    assert report.risks == ["Claw-a-thon risk"]
+    assert report.key_points == ["Claw-a-thon key point"]
+    assert actions[0].task == "Claw-a-thon action"
+    assert actions[0].owner == "Claw-a-thon owner"
+    assert facts[0].subject == "Claw-a-thon subject"
+    assert facts[0].statement == "Claw-a-thon fact"
 
 
 # ---------------------------------------------------------------- timestamp + contradiction view
@@ -208,6 +422,14 @@ def test_estimate_timestamp_none_without_duration():
     import types
     m = types.SimpleNamespace(transcript="abc", duration_sec=None)
     assert brain.estimate_timestamp(m, "abc") is None
+
+
+def test_estimate_timestamp_can_match_compact_task_text():
+    import types
+    transcript = "Mở đầu. Mọi người cần cài đặt Docker Desktop và đảm bảo mỗi team có ít nhất 1 máy đã set up Docker + GitHub."
+    m = types.SimpleNamespace(transcript=transcript, duration_sec=120)
+
+    assert brain.estimate_timestamp(m, "Cài Docker Desktop set up Docker GitHub") == "00:33"
 
 
 def test_estimate_timestamp_uses_chunk_map():
@@ -269,6 +491,34 @@ def test_ask_returns_answer_with_enriched_citations(monkeypatch):
     # citation enriched from db
     assert ans.citations[0].meeting_title == "Họp ngân sách"
     assert ans.citations[0].date == "2026-06-01"
+
+
+def test_ask_scopes_answer_to_active_meeting_group(monkeypatch):
+    merchant = db.save_meeting(_report(title="Merchant Portal - Họp 1", date="2026-06-01", transcript="t1"))
+    claw = db.save_meeting(_report(title="Claw-a-thon - Họp 1", date="2026-06-02", transcript="t2"))
+    db.update_meeting_metadata(merchant, group_title="Merchant Portal")
+    db.update_meeting_metadata(claw, group_title="Claw-a-thon")
+    db.save_facts(merchant, [KnowledgeFact(type="quyết định", subject="ngân sách", statement="Merchant dùng 500tr")])
+    db.save_facts(claw, [KnowledgeFact(type="quyết định", subject="ngân sách", statement="Claw-a-thon dùng 10 triệu")])
+    captured = {}
+
+    def fake_chat(prompt, model, **k):
+        captured["prompt"] = prompt
+        return json.dumps({
+            "answer": "Merchant dùng 500tr.",
+            "citations": [
+                {"meeting_id": merchant, "quote": "Merchant dùng 500tr"},
+                {"meeting_id": claw, "quote": "Claw-a-thon dùng 10 triệu"},
+            ],
+        })
+
+    monkeypatch.setattr(brain.llm, "chat", fake_chat)
+
+    ans = brain.ask("ngân sách bao nhiêu?", meeting_id=merchant)
+
+    assert "Merchant dùng 500tr" in captured["prompt"]
+    assert "Claw-a-thon dùng 10 triệu" not in captured["prompt"]
+    assert [c.meeting_id for c in ans.citations] == [merchant]
 
 
 def test_ask_empty_memory_returns_message():

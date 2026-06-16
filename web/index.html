@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="./styles.css?v=20260616-no-risk-detail">
+    <link rel="stylesheet" href="./styles.css?v=20260616-evidence-dropdown">
   </head>
   <body>
     <div id="app" class="app-shell">
@@ -27,7 +27,6 @@
           <button id="exportBtn" class="primary-btn new-btn export-trigger" type="button" aria-haspopup="true" aria-expanded="false" disabled><span>↧</span> Export <small class="caret">▾</small></button>
           <div class="export-dropdown" id="exportDropdown" role="menu" hidden>
             <button class="export-option" type="button" role="menuitem" data-export="docx">Word (.docx)</button>
-            <button class="export-option" type="button" role="menuitem" data-export="pdf">PDF (.pdf)</button>
           </div>
         </div>
         <button id="newMeetingBtn" class="primary-btn new-btn" type="button"><span>+</span> New meeting</button>
@@ -51,6 +50,7 @@
             <button type="button" data-time-filter="week">Week</button>
             <button type="button" data-time-filter="month">Month</button>
           </div>
+          <p class="sidebar-dnd-note">Drag and drop meeting into group</p>
           <div id="meetingList" class="meeting-list scroll"></div>
           <section class="terminology knowledge collapsed">
             <button id="toggleGlossaryBtn" class="section-toggle knowledge-title" type="button" aria-expanded="false">
@@ -60,9 +60,11 @@
             <div id="glossaryPanel" class="glossary-panel">
               <div id="termEditorPanel" class="term-editor-panel" hidden>
                 <div class="term-toolbar" aria-label="Terminology editor">
+                  <input id="termFilterInput" class="term-filter-input" type="search" placeholder="Filter terminology" aria-label="Filter terminology">
                   <button id="editTermsBtn" class="term-editor-btn" type="button">Edit</button>
                   <button id="cancelTermsBtn" class="term-editor-btn" type="button" hidden>Cancel</button>
                   <button id="saveTermsBtn" class="term-editor-btn" type="button" hidden>Save</button>
+                  <button id="applyTermsBtn" class="term-editor-btn" type="button" aria-label="Refresh selected meeting with saved terminology" hidden>Refresh</button>
                 </div>
                 <div id="termEditList" class="term-edit-list" hidden></div>
                 <div id="termAddRow" class="term-add" hidden>
@@ -81,11 +83,11 @@
             <div class="meta-row eyebrow" id="activeMeta">No meeting selected</div>
             <textarea id="activeTitleInput" class="active-title-input" rows="1" aria-label="Edit meeting name">Memoir</textarea>
             <div class="signals memory-hero">
-              <article class="radar-card signal-card red accent">
+              <article class="radar-card signal-card green">
                 <strong id="decisionDriftCount">0</strong>
                 <span>Decision</span>
               </article>
-              <article class="radar-card signal-card green">
+              <article class="radar-card signal-card red accent">
                 <strong id="contradictionCount">0</strong>
                 <span>Contradiction</span>
               </article>
@@ -97,7 +99,7 @@
             <div class="tabs" role="tablist">
               <a id="tabDigest" class="tab active" href="#digestView" data-tab="digest" onclick="switchTab('digest')">Summary</a>
               <a id="tabMemory" class="tab" href="#memoryView" data-tab="memory" onclick="switchTab('memory')">Actions</a>
-              <a id="tabTranscript" class="tab" href="#transcriptView" data-tab="transcript" onclick="switchTab('transcript')">Evidence Lab</a>
+              <a id="tabTranscript" class="tab" href="#transcriptView" data-tab="transcript" onclick="switchTab('transcript')">Evidence</a>
             </div>
           </div>
 
@@ -130,7 +132,7 @@
                 <article class="memory-card action-workbench">
                   <div class="card-title-row">
                     <h2>Actions</h2>
-                    <small>Mark commitments as pending, completed, or cancel.</small>
+                    <small>Mark action as completed, cancel or assign and send email to owner.</small>
                   </div>
                   <ul id="allActions"></ul>
                 </article>
@@ -139,13 +141,25 @@
               <section id="transcriptView" class="view scroll">
                 <div class="lab-grid">
                   <article class="memory-card evidence-graph">
-                    <h2>Evidence Graph</h2>
+                    <div class="evidence-filter-row">
+                      <h2>Evidences</h2>
+                      <div id="evidenceFilterControl" class="evidence-filter-control">
+                        <button id="evidenceFilterBtn" class="evidence-filter-btn" type="button" aria-haspopup="true" aria-expanded="false">Filter by: All</button>
+                        <div id="evidenceFilterMenu" class="evidence-filter-menu" hidden>
+                          <label class="evidence-filter-option">
+                            <input type="checkbox" value="__all__" data-evidence-filter-all checked>
+                            <span>All</span>
+                          </label>
+                          <div id="evidenceTypeOptions"></div>
+                        </div>
+                      </div>
+                    </div>
                     <ul id="facts"></ul>
                   </article>
                   <article class="memory-card transcript-panel">
-                    <div class="toolbar">
-                      <input id="transcriptSearch" class="input" type="search" placeholder="Filter transcript evidence">
-                      <button id="deleteMeetingBtn" class="danger-btn" type="button">Delete</button>
+                    <div class="toolbar transcript-toolbar">
+                      <h2>Transcript</h2>
+                      <input id="transcriptSearch" class="input" type="search" placeholder="Filter transcript">
                     </div>
                     <div id="transcriptText" class="transcript-view" aria-label="Read-only transcript evidence"></div>
                   </article>
@@ -156,10 +170,10 @@
             <section class="player" aria-label="Meeting audio playback">
               <button id="playerToggleBtn" class="play" type="button" aria-label="Play selected meeting" disabled></button>
               <span id="playerTime">00:00</span>
-              <div class="wave" aria-hidden="true">
-                <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+              <div class="player-progress" aria-hidden="true">
+                <span id="playerProgressFill"></span>
               </div>
-              <span id="playerLabel">No audio selected</span>
+              <span class="player-volume" aria-hidden="true">▮)))</span>
               <audio id="meetingAudio" preload="metadata" hidden></audio>
             </section>
           </div>
@@ -171,7 +185,7 @@
               <img class="qa-agent-logo" src="./assets/mnemosyne-logo.png?v=20260616-logo" alt="" aria-hidden="true">
               <div>
                 <strong class="qa-title-main">Ask Memoir</strong>
-                <strong id="chatScope" class="qa-scope-line">Ask across memory, not one transcript</strong>
+                <strong id="chatScope" class="qa-scope-line">Answer across memory, not just one transcript</strong>
               </div>
             </div>
           </div>
@@ -207,9 +221,10 @@
           <div class="ingest-source-box ingest-panel" data-ingest-panel="transcript" hidden>
             <textarea id="ingestText" class="transcript-editor compact" placeholder="Paste transcript here"></textarea>
           </div>
-          <label class="ingest-source-box file-box ingest-panel" data-ingest-panel="upload">
+          <label class="file-upload-row ingest-panel" data-ingest-panel="upload">
             <input id="ingestFile" type="file" accept=".wav,.mp3,.m4a,.mp4,.webm,.aiff,.ogg,.txt,.md">
-            <span id="ingestFileLabel">Optional audio/video upload</span>
+            <span class="file-upload-button">Upload</span>
+            <span id="ingestFileLabel" class="file-name-line">No file selected</span>
           </label>
           <div class="ingest-source-box record-box ingest-panel" data-ingest-panel="recording" hidden>
             <div class="record-actions">
@@ -261,6 +276,6 @@
         window.dispatchEvent(new HashChangeEvent("hashchange"));
       }
     </script>
-    <script src="./app.js?v=20260616-no-risk-detail" defer></script>
+    <script src="./app.js?v=20260616-evidence-dropdown" defer></script>
   </body>
 </html>

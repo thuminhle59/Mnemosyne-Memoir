@@ -5,7 +5,9 @@ layer adds KnowledgeFact and Contradiction. All are plain data validated from LL
 JSON, so they stay decoupled from the SQLAlchemy rows in db.py.
 """
 from typing import Literal, Optional
-from pydantic import BaseModel, Field
+import re
+
+from pydantic import BaseModel, Field, model_validator
 
 Priority = Literal["cao", "trung bình", "thấp"]
 ActionStatus = Literal["mở", "đang làm", "xong", "quá hạn", "treo"]
@@ -31,11 +33,34 @@ class ActionItem(BaseModel):
     source_meeting_id: Optional[int] = None   # provenance (set on save)
 
 
+class SummaryBrief(BaseModel):
+    context: Optional[str] = None
+    decisions: list[str] = Field(default_factory=list)
+    risk: Optional[str] = None
+    next_step: Optional[str] = None
+
+
+def _clean_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = re.sub(r"\s+", " ", str(value)).strip()
+    return cleaned or None
+
+
+def _first_sentence(value: str | None) -> str | None:
+    cleaned = _clean_text(value)
+    if not cleaned:
+        return None
+    parts = re.split(r"(?<=[.!?。])\s+", cleaned, maxsplit=1)
+    return _clean_text(parts[0])
+
+
 class MeetingReport(BaseModel):
     title: str
     date: str
     duration_min: Optional[int] = None
     summary: str
+    summary_brief: SummaryBrief = Field(default_factory=SummaryBrief)
     key_points: list[str] = Field(default_factory=list)
     decisions: list[Decision] = Field(default_factory=list)
     action_items: list[ActionItem] = Field(default_factory=list)
@@ -43,6 +68,27 @@ class MeetingReport(BaseModel):
     open_questions: list[str] = Field(default_factory=list)
     next_meeting: Optional[str] = None
     full_transcript: str = ""
+
+    @model_validator(mode="after")
+    def normalize_summary_brief(self) -> "MeetingReport":
+        brief = self.summary_brief or SummaryBrief()
+        context = _first_sentence(brief.context) or _first_sentence(self.summary)
+        decisions = [_clean_text(item) for item in brief.decisions]
+        decisions = [item for item in decisions if item][:2]
+        if not decisions:
+            decisions = [_clean_text(d.text) for d in self.decisions]
+            decisions = [item for item in decisions if item][:2]
+        risk = _first_sentence(brief.risk) or _first_sentence(self.risks[0] if self.risks else None)
+        next_step = _first_sentence(brief.next_step)
+        if not next_step and self.action_items:
+            next_step = _first_sentence(self.action_items[0].task)
+        self.summary_brief = SummaryBrief(
+            context=context,
+            decisions=decisions,
+            risk=risk,
+            next_step=next_step,
+        )
+        return self
 
 
 class KnowledgeFact(BaseModel):

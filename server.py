@@ -17,7 +17,7 @@ import time
 import uuid
 from urllib.parse import quote
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -48,6 +48,9 @@ _WEB = os.path.join(_ROOT, "web")
 MAX_UPLOAD_BYTES = int(os.getenv("MNEMOSYNE_MAX_UPLOAD_BYTES", str(500 * 1024 * 1024)))
 UPLOAD_CHUNK_BYTES = int(os.getenv("MNEMOSYNE_UPLOAD_CHUNK_BYTES", str(16 * 1024 * 1024)))
 UPLOAD_STAGING_DIR = os.getenv("MNEMOSYNE_UPLOAD_STAGING_DIR", "/tmp/mnemosyne_uploads")
+INGEST_PROGRESS_TTL_SEC = int(os.getenv("MNEMOSYNE_INGEST_PROGRESS_TTL_SEC", str(60 * 60)))
+_INGEST_PROGRESS: dict[str, dict] = {}
+INGEST_WARNING = "For fastest ingest, upload audio or paste transcript. Video may take several minutes. Please keep this window open"
 TEXT_UPLOAD_EXTENSIONS = {".txt", ".md"}
 ACTION_STATUS_ALIASES = {
     "pending": "mở",
@@ -65,15 +68,35 @@ ACTION_STATUS_ALIASES = {
     "treo": "treo",
 }
 ACTION_STATUSES = set(ACTION_STATUS_ALIASES.values())
+OWNER_HEADER_ALIAS = "X-Memoir-Owner"
 
 
 class ActionStatusBody(BaseModel):
     status: str
 
 
+def owner_from_header(x_memoir_owner: str | None = Header(default=None, alias=OWNER_HEADER_ALIAS)) -> str | None:
+    return db.clean_owner_id(x_memoir_owner) if x_memoir_owner else None
+
+
+def _ensure_action_owner(action_id: int, owner_id: str):
+    if owner_id is None:
+        return db.get_action(action_id)
+    action = db.get_action(action_id)
+    if not action or not db.get_meeting(action.meeting_id, owner_id=owner_id):
+        raise HTTPException(404, "Action not found")
+    return action
+
+
 class MeetingUpdateBody(BaseModel):
     title: str | None = None
     source_file: str | None = None
+    group_title: str | None = None
+
+
+class MeetingGroupUpdateBody(BaseModel):
+    old_group_title: str
+    new_group_title: str
 
 
 @app.middleware("http")
@@ -96,34 +119,45 @@ def _iso(dt):
         return None
 
 
-def _meeting_brief(m) -> dict:
+def _meeting_brief(m, owner_id: str | None = None) -> dict:
+    try:
+        summary_brief = m.report().summary_brief.model_dump()
+    except Exception:  # noqa: BLE001 - legacy/corrupt report fallback
+        summary_brief = None
+    display_id = db.display_id_for_meeting(m.id, owner_id=owner_id)
     return {
-        "id": m.id, "title": m.title, "date": m.date,
+        "id": m.id, "display_id": display_id or m.id, "title": m.title, "date": m.date,
         "duration_sec": m.duration_sec, "source_file": m.source_file,
+        "group_title": getattr(m, "group_title", None),
         "can_play_audio": os.path.exists(_audio_path(m.id)),
         "created_at": _iso(m.created_at), "summary": m.summary,
+        "summary_brief": summary_brief,
     }
 
 
-def _ts(m, quote):
-    return brain.estimate_timestamp(m, quote) if quote else None
+def _ts(m, *candidates):
+    for candidate in candidates:
+        ts = brain.estimate_timestamp(m, candidate) if candidate else None
+        if ts:
+            return ts
+    return None
 
 
-def _meeting_detail(m) -> dict:
+def _meeting_detail(m, owner_id: str | None = None) -> dict:
     rep = m.report()
     facts = db.facts_of_meeting(m.id)
     return {
-        **_meeting_brief(m),
+        **_meeting_brief(m, owner_id=owner_id),
         "transcript": m.transcript or "",
         "key_points": rep.key_points,
-        "decisions": [{"text": d.text, "quote": d.quote, "timestamp": _ts(m, d.quote)}
+        "decisions": [{"text": d.text, "quote": d.quote, "timestamp": _ts(m, d.quote, d.text)}
                       for d in rep.decisions],
         "action_items": [{"task": a.task, "owner": a.owner, "deadline": a.deadline,
-                          "status": a.status, "quote": a.quote, "timestamp": _ts(m, a.quote)}
+                          "status": a.status, "quote": a.quote, "timestamp": _ts(m, a.quote, a.task)}
                          for a in rep.action_items],
         "risks": rep.risks,
         "facts": [{"type": f.type, "subject": f.subject, "statement": f.statement,
-                   "quote": f.quote, "status": f.status, "timestamp": _ts(m, f.quote)}
+                   "quote": f.quote, "status": f.status, "timestamp": _ts(m, f.quote, f.statement, f.subject)}
                   for f in facts],
     }
 
@@ -131,13 +165,13 @@ def _meeting_detail(m) -> dict:
 def _action_detail(a) -> dict:
     m = db.get_meeting(a.meeting_id)
     data = a.as_dict()
-    data["timestamp"] = _ts(m, a.quote) if m else None
+    data["timestamp"] = _ts(m, a.quote, a.task) if m else None
     data["meeting_title"] = m.title if m else ""
     data["date"] = m.date if m else ""
     return data
 
 
-def _suggest_glossary_terms(m, limit: int = 12) -> list[dict]:
+def _suggest_glossary_terms(m, limit: int = 12, owner_id: str | None = None) -> list[dict]:
     rep = m.report()
     facts = db.facts_of_meeting(m.id)
     text = "\n".join([
@@ -150,7 +184,8 @@ def _suggest_glossary_terms(m, limit: int = 12) -> list[dict]:
         " ".join(f"{f.subject} {f.statement}" for f in facts),
         getattr(m, "transcript", "") or "",
     ])
-    existing = {term.lower() for term in db.glossary_terms()}
+    existing_terms = db.glossary_terms(owner_id=owner_id) if owner_id is not None else db.glossary_terms()
+    existing = {term.lower() for term in existing_terms}
     counts: dict[str, int] = {}
     patterns = [
         r"\b[A-Z][A-Za-z0-9]*(?:[A-Z][A-Za-z0-9]*)+\b",
@@ -193,6 +228,63 @@ def _decode_text_upload(data: bytes) -> str:
         return data.decode("utf-8", errors="replace")
 
 
+def _cleanup_ingest_progress(now: float | None = None) -> None:
+    now = now or time.time()
+    expired = [
+        job_id for job_id, progress in _INGEST_PROGRESS.items()
+        if now - float(progress.get("updated_at", 0)) > INGEST_PROGRESS_TTL_SEC
+    ]
+    for job_id in expired:
+        _INGEST_PROGRESS.pop(job_id, None)
+
+
+def _set_ingest_progress(
+    job_id: str | None,
+    percent: int | float,
+    stage: str,
+    detail: str,
+    *,
+    status: str = "running",
+    max_percent: int | float | None = None,
+) -> None:
+    if not job_id:
+        return
+    now = time.time()
+    value = max(0, min(100, int(round(percent))))
+    previous = _INGEST_PROGRESS.get(job_id, {})
+    _INGEST_PROGRESS[job_id] = {
+        **previous,
+        "job_id": job_id,
+        "percent": value,
+        "stage": stage,
+        "detail": detail,
+        "status": status,
+        "max_percent": int(round(max_percent)) if max_percent is not None else None,
+        "stage_started_at": now,
+        "updated_at": now,
+    }
+
+
+def _get_ingest_progress(job_id: str) -> dict:
+    _cleanup_ingest_progress()
+    progress = _INGEST_PROGRESS.get(job_id)
+    if not progress:
+        raise HTTPException(404, "Progress job not found")
+    payload = dict(progress)
+    if payload.get("status") == "running" and payload.get("max_percent") is not None:
+        elapsed = max(0, time.time() - float(payload.get("stage_started_at", payload.get("updated_at", 0))))
+        ticked = int(payload["percent"] + elapsed * 2)
+        payload["percent"] = min(int(payload["max_percent"]), ticked)
+    return {
+        "job_id": payload["job_id"],
+        "percent": int(payload["percent"]),
+        "stage": payload["stage"],
+        "detail": payload["detail"],
+        "status": payload["status"],
+        "updated_at": payload["updated_at"],
+    }
+
+
 def _upload_dir(upload_id: str) -> str:
     if not upload_id or not all(ch.isalnum() or ch == "-" for ch in upload_id):
         raise HTTPException(400, "Invalid upload id")
@@ -227,6 +319,16 @@ def _store_playback_audio(meeting_id: int, upload: bytes | None, filename: str) 
         return
 
 
+def _assemble_upload_parts(parts: list[str], dest_path: str) -> int:
+    total = 0
+    with open(dest_path, "wb") as out:
+        for path in parts:
+            with open(path, "rb") as src:
+                shutil.copyfileobj(src, out, length=1024 * 1024)
+            total += os.path.getsize(path)
+    return total
+
+
 def _ingest_payload(
     *,
     upload: bytes | None,
@@ -237,30 +339,48 @@ def _ingest_payload(
     date: str | None,
     on_duplicate: str,
     extract: bool,
+    job_id: str | None = None,
+    owner_id: str | None = None,
 ) -> dict:
+    _set_ingest_progress(job_id, 72 if upload else 10, "validating", "Đang kiểm tra file ingest", max_percent=78)
     audio = upload
     if upload and len(upload) > MAX_UPLOAD_BYTES:
         max_mb = MAX_UPLOAD_BYTES // (1024 * 1024)
+        _set_ingest_progress(job_id, 0, "error", f"Uploaded file is larger than {max_mb} MB", status="error")
         raise HTTPException(413, f"Uploaded file is larger than {max_mb} MB")
     if upload and _is_text_upload_metadata(filename, content_type):
         decoded = _decode_text_upload(upload).strip()
         if not decoded and not (text or "").strip():
+            _set_ingest_progress(job_id, 0, "error", "Uploaded file is empty", status="error")
             raise HTTPException(400, "Uploaded file is empty")
         text = "\n\n".join(part for part in [(text or "").strip(), decoded] if part) or None
         audio = None
     t0 = time.time()
+    _set_ingest_progress(
+        job_id,
+        78 if upload else 25,
+        "ingesting",
+        INGEST_WARNING,
+        max_percent=95,
+    )
     try:
         out = brain.ingest(
             text=text or None, audio=audio, date=date or None, title=title or None,
             filename=filename, extract=extract,
             source_file=(filename if upload else None), on_duplicate=on_duplicate,
+            owner_id=owner_id,
         )
     except Exception as e:  # noqa: BLE001
+        _set_ingest_progress(job_id, 0, "error", str(e), status="error")
         raise HTTPException(400, str(e))
     if audio and not out.get("skipped"):
+        _set_ingest_progress(job_id, 96, "saving", "Đang lưu audio playback", max_percent=98)
         _store_playback_audio(out["meeting_id"], upload, filename)
-    return {
+    _set_ingest_progress(job_id, 100, "done", "Hoàn tất ingest", status="done")
+    display_id = db.display_id_for_meeting(out["meeting_id"], owner_id=owner_id) or out["meeting_id"]
+    response = {
         "meeting_id": out["meeting_id"],
+        "display_id": display_id,
         "skipped": out.get("skipped", False),
         "facts_count": len(out.get("facts", [])),
         "contradictions": [c.model_dump() for c in out.get("contradictions", [])],
@@ -268,6 +388,9 @@ def _ingest_payload(
         "elapsed_sec": round(time.time() - t0, 1),
         "report": out["report"].model_dump(),
     }
+    if job_id:
+        response["job_id"] = job_id
+    return response
 
 
 # ----------------------------------------------------------------- API: read
@@ -287,42 +410,60 @@ def frontend_config():
 
 
 @app.get("/api/stats")
-def stats():
-    return db.counts()
+def stats(owner_id: str = Depends(owner_from_header)):
+    return db.counts(owner_id=owner_id)
 
 
 @app.get("/api/meetings")
-def meetings():
-    return [_meeting_brief(m) for m in db.list_meetings(limit=1000)]
+def meetings(owner_id: str = Depends(owner_from_header)):
+    return [_meeting_brief(m, owner_id=owner_id) for m in db.list_meetings(limit=1000, owner_id=owner_id)]
 
 
 @app.get("/api/meetings/{meeting_id}")
-def meeting(meeting_id: int):
-    m = db.get_meeting(meeting_id)
+def meeting(meeting_id: int, owner_id: str = Depends(owner_from_header)):
+    m = db.get_meeting(meeting_id, owner_id=owner_id) if owner_id is not None else db.get_meeting(meeting_id)
     if not m:
         raise HTTPException(404, "meeting not found")
-    return _meeting_detail(m)
+    return _meeting_detail(m, owner_id=owner_id)
 
 
 @app.patch("/api/meetings/{meeting_id}")
-def update_meeting(meeting_id: int, body: MeetingUpdateBody):
-    if body.title is None and body.source_file is None:
+def update_meeting(meeting_id: int, body: MeetingUpdateBody, owner_id: str = Depends(owner_from_header)):
+    if body.title is None and body.source_file is None and body.group_title is None:
         raise HTTPException(400, "No meeting metadata provided")
     if not db.update_meeting_metadata(
         meeting_id,
         title=body.title,
         source_file=body.source_file,
+        group_title=body.group_title,
+        **({"owner_id": owner_id} if owner_id is not None else {}),
     ):
         raise HTTPException(404, "meeting not found")
-    m = db.get_meeting(meeting_id)
+    m = db.get_meeting(meeting_id, owner_id=owner_id) if owner_id is not None else db.get_meeting(meeting_id)
     if not m:
         raise HTTPException(404, "meeting not found")
-    return _meeting_brief(m)
+    return _meeting_brief(m, owner_id=owner_id)
+
+
+@app.patch("/api/meeting_groups")
+def update_meeting_group(body: MeetingGroupUpdateBody, owner_id: str = Depends(owner_from_header)):
+    updated = (
+        db.rename_meeting_group(body.old_group_title, body.new_group_title, owner_id=owner_id)
+        if owner_id is not None
+        else db.rename_meeting_group(body.old_group_title, body.new_group_title)
+    )
+    return {
+        "old_group_title": body.old_group_title,
+        "new_group_title": body.new_group_title,
+        "updated": updated,
+    }
 
 
 @app.get("/api/meetings/{meeting_id}/audio")
-def meeting_audio(meeting_id: int):
+def meeting_audio(meeting_id: int, owner_id: str = Depends(owner_from_header)):
     """Serve the stored audio for listen-back (Phase 3 stores it under web/audio)."""
+    if owner_id is not None and not db.get_meeting(meeting_id, owner_id=owner_id):
+        raise HTTPException(404, "meeting not found")
     path = _audio_path(meeting_id)
     if not os.path.exists(path):
         raise HTTPException(404, "no audio stored for this meeting")
@@ -336,12 +477,12 @@ _REPORT_MEDIA = {
 
 
 @app.get("/api/meetings/{meeting_id}/report.{fmt}")
-def meeting_report(meeting_id: int, fmt: str):
+def meeting_report(meeting_id: int, fmt: str, owner_id: str = Depends(owner_from_header)):
     """Export a meeting's executive report as .docx or .pdf for download."""
     fmt = fmt.lower()
     if fmt not in _REPORT_MEDIA:
         raise HTTPException(400, "format must be docx or pdf")
-    m = db.get_meeting(meeting_id)
+    m = db.get_meeting(meeting_id, owner_id=owner_id) if owner_id is not None else db.get_meeting(meeting_id)
     if not m:
         raise HTTPException(404, "meeting not found")
     rep = m.report()
@@ -360,15 +501,16 @@ def meeting_report(meeting_id: int, fmt: str):
 
 
 @app.get("/api/actions")
-def actions(status: str | None = None):
-    return [_action_detail(a) for a in db.all_actions(status=status)]
+def actions(status: str | None = None, owner_id: str = Depends(owner_from_header)):
+    return [_action_detail(a) for a in db.all_actions(status=status, owner_id=owner_id)]
 
 
 @app.patch("/api/actions/{action_id}")
-def update_action(action_id: int, body: ActionStatusBody):
+def update_action(action_id: int, body: ActionStatusBody, owner_id: str = Depends(owner_from_header)):
     status = ACTION_STATUS_ALIASES.get(body.status.strip().lower())
     if status not in ACTION_STATUSES:
         raise HTTPException(400, "Invalid action status")
+    _ensure_action_owner(action_id, owner_id)
     if not db.update_action_status(action_id, status):
         raise HTTPException(404, "Action not found")
     return {"id": action_id, "status": status}
@@ -382,9 +524,10 @@ class AssignBody(BaseModel):
 
 
 @app.post("/api/actions/{action_id}/assign")
-def assign_action(action_id: int, body: AssignBody):
+def assign_action(action_id: int, body: AssignBody, owner_id: str = Depends(owner_from_header)):
     if not body.owner.strip():
         raise HTTPException(400, "owner is required")
+    _ensure_action_owner(action_id, owner_id)
     res = brain.assign_action(action_id, body.owner.strip(), email=body.email,
                               notify=body.notify, note=body.note)
     if not res.get("assigned"):
@@ -393,13 +536,13 @@ def assign_action(action_id: int, body: AssignBody):
 
 
 @app.get("/api/contradictions")
-def contradictions():
-    return brain.contradiction_view()
+def contradictions(owner_id: str = Depends(owner_from_header)):
+    return brain.contradiction_view(owner_id=owner_id)
 
 
 @app.get("/api/resurfaced")
-def resurfaced():
-    return brain.resurfaced_view()
+def resurfaced(owner_id: str = Depends(owner_from_header)):
+    return brain.resurfaced_view(owner_id=owner_id)
 
 
 @app.get("/api/digest")
@@ -414,22 +557,23 @@ def digest(scope: str = "all"):
 
 
 @app.get("/api/glossary")
-def glossary():
-    return [g.as_dict() for g in db.list_glossary()]
+def glossary(owner_id: str = Depends(owner_from_header)):
+    return [g.as_dict() for g in db.list_glossary(owner_id=owner_id)]
 
 
 @app.get("/api/glossary/suggestions")
-def glossary_suggestions(meeting_id: int):
-    m = db.get_meeting(meeting_id)
+def glossary_suggestions(meeting_id: int, owner_id: str = Depends(owner_from_header)):
+    m = db.get_meeting(meeting_id, owner_id=owner_id) if owner_id is not None else db.get_meeting(meeting_id)
     if not m:
         raise HTTPException(404, "meeting not found")
-    return {"suggestions": _suggest_glossary_terms(m)}
+    return {"suggestions": _suggest_glossary_terms(m, owner_id=owner_id)}
 
 
 # ----------------------------------------------------------------- API: write
 
 class AskBody(BaseModel):
     question: str
+    meeting_id: int | None = None
 
 
 class UploadInitBody(BaseModel):
@@ -439,8 +583,14 @@ class UploadInitBody(BaseModel):
 
 
 @app.post("/api/ask")
-def ask(body: AskBody):
-    ans = brain.ask(body.question)
+def ask(body: AskBody, owner_id: str = Depends(owner_from_header)):
+    if owner_id is not None and body.meeting_id and not db.get_meeting(body.meeting_id, owner_id=owner_id):
+        raise HTTPException(404, "meeting not found")
+    ans = (
+        brain.ask(body.question, meeting_id=body.meeting_id, owner_id=owner_id)
+        if owner_id is not None
+        else brain.ask(body.question, meeting_id=body.meeting_id)
+    )
     return {"answer": ans.text,
             "citations": [c.model_dump() for c in ans.citations]}
 
@@ -453,20 +603,32 @@ async def ingest(
     date: str | None = Form(default=None),
     on_duplicate: str = Form(default="new"),
     extract: bool = Form(default=True),
+    job_id: str | None = Form(default=None),
+    owner_id: str = Depends(owner_from_header),
 ):
     upload = await file.read() if file else None
     filename = file.filename if file else "meeting.wav"
+    progress_id = job_id or str(uuid.uuid4())
     if file and not upload and not (text or "").strip():
+        _set_ingest_progress(progress_id, 0, "error", "Uploaded file is empty", status="error")
         raise HTTPException(400, "Uploaded file is empty")
     return await run_in_threadpool(
         _ingest_payload,
         upload=upload, filename=filename, content_type=file.content_type if file else None,
         text=text, title=title, date=date, on_duplicate=on_duplicate, extract=extract,
+        job_id=progress_id,
+        owner_id=owner_id,
     )
+
+
+@app.get("/api/ingest/progress/{job_id}")
+def ingest_progress(job_id: str):
+    return _get_ingest_progress(job_id)
 
 
 @app.post("/api/uploads")
 def create_upload(body: UploadInitBody):
+    _cleanup_ingest_progress()
     if body.size <= 0:
         raise HTTPException(400, "Uploaded file is empty")
     if body.size > MAX_UPLOAD_BYTES:
@@ -485,8 +647,11 @@ def create_upload(body: UploadInitBody):
     }
     with open(os.path.join(upload_dir, "meta.json"), "w", encoding="utf-8") as fh:
         json.dump(meta, fh)
+    _set_ingest_progress(upload_id, 0, "queued", "Đã tạo phiên upload", max_percent=5)
     return {
         "upload_id": upload_id,
+        "job_id": upload_id,
+        "progress_url": f"/api/ingest/progress/{upload_id}",
         "chunk_size": UPLOAD_CHUNK_BYTES,
         "total_chunks": total_chunks,
     }
@@ -509,7 +674,16 @@ async def upload_chunk(
     upload_dir = _upload_dir(upload_id)
     with open(os.path.join(upload_dir, f"{index}.part"), "wb") as fh:
         fh.write(data)
-    return {"received": index}
+    received_chunks = len([name for name in os.listdir(upload_dir) if name.endswith(".part")])
+    percent = int(round((received_chunks / int(meta["total_chunks"])) * 70))
+    _set_ingest_progress(
+        upload_id,
+        percent,
+        "uploading",
+        f"Đã nhận {received_chunks}/{meta['total_chunks']} chunk",
+        max_percent=70,
+    )
+    return {"received": index, "received_chunks": received_chunks, "percent": percent}
 
 
 @app.post("/api/uploads/{upload_id}/complete")
@@ -520,6 +694,7 @@ async def complete_upload(
     date: str | None = Form(default=None),
     on_duplicate: str = Form(default="new"),
     extract: bool = Form(default=True),
+    owner_id: str = Depends(owner_from_header),
 ):
     upload_dir = _upload_dir(upload_id)
     meta = _read_upload_meta(upload_id)
@@ -527,11 +702,17 @@ async def complete_upload(
     parts = [os.path.join(upload_dir, f"{i}.part") for i in range(total_chunks)]
     missing = [str(i) for i, path in enumerate(parts) if not os.path.exists(path)]
     if missing:
+        _set_ingest_progress(upload_id, 70, "error", f"Missing chunks: {', '.join(missing[:5])}", status="error")
         raise HTTPException(400, f"Missing chunks: {', '.join(missing[:5])}")
     try:
-        upload = b"".join(open(path, "rb").read() for path in parts)
-        if len(upload) != int(meta["size"]):
+        _set_ingest_progress(upload_id, 70, "assembling", "Đang ghép file upload", max_percent=76)
+        assembled_path = os.path.join(upload_dir, "upload.bin")
+        upload_size = _assemble_upload_parts(parts, assembled_path)
+        if upload_size != int(meta["size"]):
+            _set_ingest_progress(upload_id, 70, "error", "Upload size mismatch", status="error")
             raise HTTPException(400, "Upload size mismatch")
+        with open(assembled_path, "rb") as fh:
+            upload = fh.read()
         return await run_in_threadpool(
             _ingest_payload,
             upload=upload,
@@ -542,6 +723,8 @@ async def complete_upload(
             date=date,
             on_duplicate=on_duplicate,
             extract=extract,
+            job_id=upload_id,
+            owner_id=owner_id,
         )
     finally:
         shutil.rmtree(upload_dir, ignore_errors=True)
@@ -552,12 +735,12 @@ class CheckBody(BaseModel):
 
 
 @app.post("/api/ingest/check")
-async def ingest_check(file: UploadFile = File(...)):
+async def ingest_check(file: UploadFile = File(...), owner_id: str = Depends(owner_from_header)):
     """Pre-flight: tell the UI whether this exact file was already ingested."""
     data = await file.read()
-    dup = db.find_by_audio_hash(db.audio_hash(data))
+    dup = db.find_by_audio_hash(db.audio_hash(data), owner_id=owner_id) if owner_id is not None else db.find_by_audio_hash(db.audio_hash(data))
     return {"duplicate": bool(dup),
-            "meeting": _meeting_brief(dup) if dup else None}
+            "meeting": _meeting_brief(dup, owner_id=owner_id) if dup else None}
 
 
 class ReanalyzeBody(BaseModel):
@@ -565,9 +748,13 @@ class ReanalyzeBody(BaseModel):
 
 
 @app.post("/api/meetings/{meeting_id}/reanalyze")
-def reanalyze(meeting_id: int, body: ReanalyzeBody):
+def reanalyze(meeting_id: int, body: ReanalyzeBody, owner_id: str = Depends(owner_from_header)):
     try:
-        out = brain.reanalyze(meeting_id, body.transcript)
+        out = (
+            brain.reanalyze(meeting_id, body.transcript, owner_id=owner_id)
+            if owner_id is not None
+            else brain.reanalyze(meeting_id, body.transcript)
+        )
     except ValueError as e:
         raise HTTPException(404, str(e))
     return {"meeting_id": meeting_id, "facts_count": len(out["facts"]),
@@ -575,9 +762,27 @@ def reanalyze(meeting_id: int, body: ReanalyzeBody):
             "forgotten": out.get("forgotten", [])}
 
 
+@app.post("/api/meetings/{meeting_id}/apply_glossary")
+def apply_glossary(meeting_id: int, owner_id: str = Depends(owner_from_header)):
+    try:
+        out = (
+            brain.apply_glossary_to_meeting(meeting_id, owner_id=owner_id)
+            if owner_id is not None
+            else brain.apply_glossary_to_meeting(meeting_id)
+        )
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    return {"meeting_id": meeting_id, "changed": out["changed"],
+            "facts_count": len(out["facts"]),
+            "contradictions": [c.model_dump() for c in out["contradictions"]],
+            "forgotten": out.get("forgotten", [])}
+
+
 @app.delete("/api/meetings/{meeting_id}")
-def delete_meeting(meeting_id: int):
-    db.delete_meeting(meeting_id)
+def delete_meeting(meeting_id: int, owner_id: str = Depends(owner_from_header)):
+    deleted = db.delete_meeting(meeting_id, owner_id=owner_id) if owner_id is not None else db.delete_meeting(meeting_id)
+    if not deleted:
+        raise HTTPException(404, "meeting not found")
     path = _audio_path(meeting_id)
     if os.path.exists(path):
         os.remove(path)
@@ -616,43 +821,39 @@ class GlossaryBody(BaseModel):
 
 
 @app.post("/api/glossary")
-def add_glossary(body: GlossaryBody):
-    gid = db.add_glossary(body.term, wrong=body.wrong)
+def add_glossary(body: GlossaryBody, owner_id: str = Depends(owner_from_header)):
+    gid = db.add_glossary(body.term, wrong=body.wrong, owner_id=owner_id) if owner_id is not None else db.add_glossary(body.term, wrong=body.wrong)
     return {"id": gid}
 
 
 @app.post("/api/glossary/learn")
-async def learn_glossary(file: UploadFile = File(...)):
+async def learn_glossary(file: UploadFile = File(...), owner_id: str = Depends(owner_from_header)):
     raw = await file.read()
     text = raw.decode("utf-8", "ignore")  # txt/md; docx parsed client-side or extend here
-    terms = brain.learn_glossary(text)
+    terms = brain.learn_glossary(text, owner_id=owner_id) if owner_id is not None else brain.learn_glossary(text)
     return {"terms": terms}
 
 
 @app.delete("/api/glossary/{gid}")
-def delete_glossary(gid: int):
-    db.delete_glossary(gid)
+def delete_glossary(gid: int, owner_id: str = Depends(owner_from_header)):
+    deleted = db.delete_glossary(gid, owner_id=owner_id) if owner_id is not None else db.delete_glossary(gid)
+    if not deleted:
+        raise HTTPException(404, "glossary term not found")
     return {"status": "deleted", "id": gid}
 
 
 # ----------------------------------------------------------------- static SPA
 
 def _frontend_bootstrap() -> dict:
-    meeting_rows = [_meeting_brief(m) for m in db.list_meetings(limit=1000)]
-    meeting_details = {}
-    if meeting_rows:
-        first = db.get_meeting(meeting_rows[0]["id"])
-        if first:
-            meeting_details[str(first.id)] = _meeting_detail(first)
     return {
         "config": frontend_config(),
-        "stats": stats(),
-        "meetings": meeting_rows,
-        "meeting_details": meeting_details,
-        "actions": actions(),
-        "contradictions": contradictions(),
-        "resurfaced": resurfaced(),
-        "glossary": glossary(),
+        "stats": db.counts(owner_id="__bootstrap_empty__"),
+        "meetings": [],
+        "meeting_details": {},
+        "actions": [],
+        "contradictions": [],
+        "resurfaced": [],
+        "glossary": [],
         "digest": None,
     }
 

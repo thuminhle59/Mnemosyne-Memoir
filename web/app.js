@@ -5,6 +5,29 @@ if (FILE_PROTOCOL_REDIRECTED) {
 
 const API_ORIGIN = window.location.protocol === "file:" ? "http://127.0.0.1:8080" : "";
 const apiUrl = (path) => `${API_ORIGIN}${path}`;
+const OWNER_STORAGE_KEY = "memoir_owner_id";
+
+function getOwnerId() {
+  try {
+    const existing = window.localStorage.getItem(OWNER_STORAGE_KEY);
+    if (existing) return existing;
+    const generated = window.crypto.randomUUID();
+    window.localStorage.setItem(OWNER_STORAGE_KEY, generated);
+    return generated;
+  } catch (_) {
+    return "browser-session-owner";
+  }
+}
+
+function withOwnerHeader(options = {}) {
+  return {
+    ...options,
+    headers: {
+      ...(options.headers || {}),
+      "X-Memoir-Owner": getOwnerId(),
+    },
+  };
+}
 
 const API = {
   health: apiUrl("/api/health"),
@@ -12,12 +35,14 @@ const API = {
   uploads: apiUrl("/api/uploads"),
   uploadChunk: (id) => apiUrl(`/api/uploads/${id}/chunks`),
   uploadComplete: (id) => apiUrl(`/api/uploads/${id}/complete`),
+  ingestProgress: (id) => apiUrl(`/api/ingest/progress/${id}`),
   stats: apiUrl("/api/stats"),
   meetings: apiUrl("/api/meetings"),
   meeting: (id) => apiUrl(`/api/meetings/${id}`),
   audio: (id) => apiUrl(`/api/meetings/${id}/audio`),
   report: (id, fmt) => apiUrl(`/api/meetings/${id}/report.${fmt}`),
   updateMeeting: (id) => apiUrl(`/api/meetings/${id}`),
+  renameGroup: apiUrl("/api/meeting_groups"),
   ask: apiUrl("/api/ask"),
   ingest: apiUrl("/api/ingest"),
   actions: apiUrl("/api/actions"),
@@ -29,6 +54,7 @@ const API = {
   followup: apiUrl("/api/followup"),
   scanForgotten: apiUrl("/api/scan_forgotten"),
   reanalyze: (id) => apiUrl(`/api/meetings/${id}/reanalyze`),
+  applyGlossary: (id) => apiUrl(`/api/meetings/${id}/apply_glossary`),
   deleteMeeting: (id) => apiUrl(`/api/meetings/${id}`),
   glossary: apiUrl("/api/glossary"),
   glossarySuggestions: (id) => apiUrl(`/api/glossary/suggestions?meeting_id=${id}`),
@@ -49,8 +75,9 @@ function readBootstrapData() {
 const BOOTSTRAP_DATA = readBootstrapData();
 
 const MAX_UPLOAD_BYTES = 500 * 1024 * 1024;
-const DIRECT_UPLOAD_BYTES = 64 * 1024 * 1024;
 const DEFAULT_UPLOAD_CHUNK_BYTES = 16 * 1024 * 1024;
+const CHUNK_UPLOAD_CONCURRENCY = 3;
+const INGEST_WARNING = "For fastest ingest, upload audio or paste transcript. Video may take several minutes. Please keep this window open";
 
 function currentTabFromLocation() {
   return {
@@ -80,6 +107,8 @@ const state = {
   glossaryCollapsed: true,
   glossaryEditing: false,
   glossaryDraft: [],
+  glossaryFilter: "",
+  evidenceTypeFilter: [],
   transcriptSearch: "",
   previewUrl: null,
   recordedFile: null,
@@ -146,11 +175,12 @@ function requestWithXhr(url, options = {}) {
 
 async function request(url, options = {}) {
   let res;
+  const requestOptions = withOwnerHeader(options);
   try {
-    const needsUploadProgress = typeof options.onUploadProgress === "function";
+    const needsUploadProgress = typeof requestOptions.onUploadProgress === "function";
     res = typeof window.fetch === "function" && !needsUploadProgress
-      ? await window.fetch(url, options)
-      : await requestWithXhr(url, options);
+      ? await window.fetch(url, requestOptions)
+      : await requestWithXhr(url, requestOptions);
   } catch (error) {
     if (error?.name === "AbortError") throw error;
     throw new Error(`Cannot reach Memoir API at ${API_ORIGIN || window.location.origin}. Make sure the server is running on http://127.0.0.1:8080.`);
@@ -170,10 +200,6 @@ async function request(url, options = {}) {
 
 function bootstrapMeetingDetail(id) {
   return BOOTSTRAP_DATA?.meeting_details?.[String(id)] || null;
-}
-
-function isPayloadTooLarge(error) {
-  return /413|payload too large|request entity too large|larger than/i.test(error?.message || "");
 }
 
 function escapeHtml(value) {
@@ -213,6 +239,10 @@ function setUploadProgress(percent, label, detail, variant = "") {
   if (detail || label) setUploadStatus(detail || label);
 }
 
+function setFileIngestProgress(percent, variant = "") {
+  setIngestPercent(percent, variant);
+}
+
 function showIngestProgress() {
   const box = $("ingestProgress");
   if (!box) return;
@@ -230,6 +260,49 @@ function setIngestPercent(percent, variant = "") {
   const fill = $("ingestProgressFill");
   if (label) label.textContent = `${value}%`;
   if (fill) fill.style.width = `${value}%`;
+}
+
+function makeClientJobId() {
+  if (window.crypto?.randomUUID) return window.crypto.randomUUID();
+  return `job-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function progressStatusText(progress) {
+  if (hasSelectedIngestFile()) return INGEST_WARNING;
+  if (progress?.detail) return progress.detail;
+  return {
+    queued: "Đang chuẩn bị ingest.",
+    uploading: "Đang tải file lên.",
+    assembling: "Đang ghép file upload.",
+    validating: "Đang kiểm tra file ingest.",
+    ingesting: INGEST_WARNING,
+    saving: "Đang lưu kết quả.",
+    done: "Hoàn tất ingest.",
+    error: "Ingest bị lỗi.",
+  }[progress?.stage] || "Đang ingest file.";
+}
+
+function pollBackendIngestProgress(jobId, floor = 0) {
+  let stopped = false;
+  let timer = null;
+  const tick = async () => {
+    if (stopped || !jobId) return;
+    try {
+      const progress = await request(API.ingestProgress(jobId));
+      const percent = progress.status === "error" ? (progress.percent || 0) : Math.max(floor, progress.percent || 0);
+      setIngestPercent(percent, progress.status === "error" ? "error" : "");
+      setUploadStatus(progressStatusText(progress));
+      if (progress.status === "done" || progress.status === "error") return;
+    } catch (_) {
+      // The request may reach the server before the ingest handler creates the job.
+    }
+    if (!stopped) timer = window.setTimeout(tick, 800);
+  };
+  timer = window.setTimeout(tick, 250);
+  return () => {
+    stopped = true;
+    if (timer) window.clearTimeout(timer);
+  };
 }
 
 function resetUploadProgress() {
@@ -322,7 +395,7 @@ function clearSelectedUploadFile() {
   const input = $("ingestFile");
   if (input) input.value = "";
   const label = $("ingestFileLabel");
-  if (label) label.textContent = "Optional audio/video upload";
+  if (label) label.textContent = "No file selected";
   clearFilePreview();
 }
 
@@ -354,6 +427,7 @@ function stripExtension(value = "") {
 }
 
 function deriveMeetingGroup(meeting = {}) {
+  if (meeting.group_title) return meeting.group_title;
   const base = stripExtension(meeting.title || meeting.source_file || "").trim();
   if (!base) return "Ungrouped";
   const split = base.split(/\s[-–—]\s|\/|:|\|/).map((part) => part.trim()).filter(Boolean);
@@ -365,7 +439,7 @@ function deriveMeetingGroup(meeting = {}) {
 function groupMeetingsForSidebar(meetings) {
   const groups = new Map();
   meetings.forEach((meeting) => {
-    const group = deriveMeetingGroup(meeting);
+    const group = meeting.group_title || deriveMeetingGroup(meeting);
     if (!groups.has(group)) groups.set(group, []);
     groups.get(group).push(meeting);
   });
@@ -471,13 +545,23 @@ function severityBadge(severity = "") {
   return `<span class="severity-badge severity-${severityKey(label)}">${escapeHtml(label)}</span>`;
 }
 
-// A meeting's stable number is its id. Cited evidence shows "Họp #N" linking back
-// to the source meeting (replaces vague "trước/nay" wording in contradictions).
+function meetingDisplayId(meeting) {
+  return meeting?.display_id || meeting?.id || "";
+}
+
+function meetingDisplayIdById(id) {
+  const meeting = state.meetings.find((m) => Number(m.id) === Number(id));
+  return meetingDisplayId(meeting) || id;
+}
+
+// Cited evidence shows "Họp #N" linking back to the source meeting, using the
+// owner-scoped display number while keeping the database id for navigation.
 function meetingNumberLabel(citation) {
   const id = citation?.meeting_id;
   if (!id) return "";
-  const title = citation.meeting_title || state.meetings.find((m) => Number(m.id) === Number(id))?.title || "";
-  return `#${id}${title ? ` · ${title}` : ""}`;
+  const meeting = state.meetings.find((m) => Number(m.id) === Number(id));
+  const title = citation.meeting_title || meeting?.title || "";
+  return `#${meetingDisplayId(meeting) || id}${title ? ` · ${title}` : ""}`;
 }
 
 function citationChip(citation) {
@@ -493,9 +577,36 @@ function contradictionCites(c) {
   return `<span class="cite-row">${oldChip}${arrow}${newChip}</span>`;
 }
 
+function meetingInlineRef(citation) {
+  return citation?.meeting_id ? `(meeting #${meetingDisplayIdById(citation.meeting_id)})` : "";
+}
+
+function contradictionText(c) {
+  const subject = c.subject ? `${c.subject}: ` : "";
+  const oldStatement = c.old?.statement || c.old?.quote || "";
+  const newStatement = c.new?.statement || c.new?.quote || "";
+  if (oldStatement && newStatement) {
+    return `${subject}Đã thay đổi từ ${oldStatement} ${meetingInlineRef(c.old)} sang ${newStatement} ${meetingInlineRef(c.new)}`.replace(/\s+/g, " ").trim();
+  }
+  if (newStatement) {
+    return `${subject}Hiện tại ghi nhận ${newStatement} ${meetingInlineRef(c.new)}`.replace(/\s+/g, " ").trim();
+  }
+  return `${subject}${c.explanation || "Có sự không nhất quán giữa các meeting."}`;
+}
+
 function renderStats() {
   $("meetingCount").textContent = state.stats.meetings ?? state.meetings.length;
   $("termCount").textContent = `${state.glossary.length} terms`;
+}
+
+function resizeGroupTitleInput(input) {
+  if (!input) return;
+  input.style.height = "auto";
+  input.style.height = `${input.scrollHeight}px`;
+}
+
+function resizeGroupTitleInputs() {
+  document.querySelectorAll("[data-group-title-input]").forEach(resizeGroupTitleInput);
 }
 
 function renderMeetings() {
@@ -506,18 +617,17 @@ function renderMeetings() {
   });
   const groups = groupMeetingsForSidebar(meetings);
   $("meetingList").innerHTML = groups.length ? groups.map(([group, groupMeetings]) => `
-    <section class="group-folder">
-      <button class="group-title" type="button" aria-label="${escapeHtml(group)} folder">
-        <b>${escapeHtml(group)}</b>
-        <small>${groupMeetings.length}</small>
-      </button>
+    <section class="group-folder" data-group-title="${escapeHtml(group)}">
+      <div class="group-title" aria-label="${escapeHtml(group)} folder" data-group-name="${escapeHtml(group)}">
+        <textarea class="group-title-input" rows="1" readonly data-group-title-input="${escapeHtml(group)}" aria-label="Double-click to rename group">${escapeHtml(group)}</textarea>
+      </div>
       <div class="group-body">
         ${groupMeetings.map((m) => `
-          <div class="meeting-card group-meeting ${m.id === state.activeId ? "active" : ""}" data-meeting-id="${m.id}">
+          <div class="meeting-card group-meeting ${m.id === state.activeId ? "active" : ""}" data-meeting-id="${m.id}" draggable="true">
             <div class="meeting-compact-title">
               <span class="status-dot ${m.can_play_audio ? "ready" : ""}"></span>
-              <span class="meeting-num">#${m.id}</span>
-              <textarea class="meeting-title-input" rows="2" readonly data-meeting-title="${m.id}" aria-label="Double-click to rename meeting">${escapeHtml(m.title || `Meeting #${m.id}`)}</textarea>
+              <span class="meeting-num">#${meetingDisplayId(m)}</span>
+              <textarea class="meeting-title-input" rows="2" readonly data-meeting-title="${m.id}" aria-label="Double-click to rename meeting">${escapeHtml(m.title || `Meeting #${meetingDisplayId(m)}`)}</textarea>
               <button class="meeting-delete" type="button" data-meeting-delete="${m.id}" aria-label="Delete meeting">x</button>
             </div>
             <div class="meeting-compact-meta"><span>${escapeHtml(meetingDateTime(m))}</span><span>${escapeHtml(meetingDurationLabel(m))}</span></div>
@@ -526,6 +636,7 @@ function renderMeetings() {
       </div>
     </section>
   `).join("") : '<div class="meeting-card empty"><h3>No memory sources</h3><p>Use New meeting to ingest one.</p></div>';
+  resizeGroupTitleInputs();
 
   document.querySelectorAll("[data-meeting-id]").forEach((el) => {
     el.addEventListener("click", (event) => {
@@ -536,6 +647,49 @@ function renderMeetings() {
         return;
       }
       selectMeeting(Number(el.dataset.meetingId));
+    });
+    el.addEventListener("dragstart", (event) => {
+      event.dataTransfer?.setData("text/plain", el.dataset.meetingId);
+      event.dataTransfer?.setData("application/x-meeting-id", el.dataset.meetingId);
+      event.dataTransfer.effectAllowed = "move";
+    });
+  });
+  document.querySelectorAll("[data-group-title]").forEach((folder) => {
+    folder.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      folder.classList.add("drag-over");
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    });
+    folder.addEventListener("dragleave", () => folder.classList.remove("drag-over"));
+    folder.addEventListener("drop", (event) => {
+      event.preventDefault();
+      folder.classList.remove("drag-over");
+      const id = Number(event.dataTransfer?.getData("application/x-meeting-id") || event.dataTransfer?.getData("text/plain"));
+      const group = folder.dataset.groupTitle || "";
+      if (id && group) updateMeetingGroup(id, group).catch((e) => showToast(e.message));
+    });
+  });
+  document.querySelectorAll("[data-group-title-input]").forEach((input) => {
+    input.addEventListener("dblclick", (event) => {
+      event.preventDefault();
+      input.removeAttribute("readonly");
+      input.focus();
+      resizeGroupTitleInput(input);
+      input.select();
+    });
+    input.addEventListener("input", () => resizeGroupTitleInput(input));
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !input.hasAttribute("readonly")) {
+        event.preventDefault();
+        input.blur();
+      }
+    });
+    input.addEventListener("blur", () => {
+      if (input.hasAttribute("readonly")) return;
+      const oldGroupTitle = input.dataset.groupTitleInput || "";
+      const newGroupTitle = input.value;
+      input.setAttribute("readonly", "");
+      renameMeetingGroup(oldGroupTitle, newGroupTitle).catch((e) => showToast(e.message));
     });
   });
 }
@@ -567,8 +721,8 @@ function meetingMatchesTimeFilter(meeting) {
 
 function renderActive() {
   const m = state.active;
-  $("activeMeta").textContent = m ? `${formatDateTimeSeconds(m.date)} · ${fmtDuration(m.duration_sec)} · #${m.id}` : "No meeting selected";
-  $("activeTitleInput").value = m ? (m.title || `Meeting #${m.id}`) : "Memoir";
+  $("activeMeta").textContent = m ? `${formatDateTimeSeconds(m.date)} · ${fmtDuration(m.duration_sec)} · #${meetingDisplayId(m)}` : "No meeting selected";
+  $("activeTitleInput").value = m ? (m.title || `Meeting #${meetingDisplayId(m)}`) : "Memoir";
   $("activeTitleInput").disabled = !m;
   $("exportBtn").disabled = !m;
   if (!m) closeExportMenu();
@@ -585,67 +739,77 @@ function resizeActiveTitle() {
   $("activeTitleInput").style.height = `${$("activeTitleInput").scrollHeight}px`;
 }
 
-function splitSummarySentences(text = "") {
+function fallbackSummaryLines(text = "") {
   return String(text)
     .replace(/\s+/g, " ")
     .split(/(?<=[.!?。])\s+|[;•]\s+|\n+/)
     .map((sentence) => sentence.trim())
+    .filter(Boolean)
+    .slice(0, 3);
+}
+
+function summaryBriefLines(brief) {
+  return [
+    brief?.context,
+    ...(brief?.decisions || []).slice(0, 2),
+    brief?.risk,
+    brief?.next_step,
+  ]
+    .map((line) => String(line || "").replace(/\s+/g, " ").trim())
     .filter(Boolean);
 }
 
-function executiveSummaryLines(meeting) {
-  if (!meeting) {
-    return ["Load meetings or ingest a transcript to start building a cross-meeting decision memory layer."];
-  }
-  const rawSummary = meeting.summary || "No executive summary yet.";
-  const sentences = splitSummarySentences(rawSummary);
-  const executivePattern = /(mục tiêu|goal|kết quả|result|decision|quyết định|chốt|thống nhất|deadline|rủi ro|risk|blocker|vấn đề|action|việc cần làm|cam kết|owner|launch|deploy|triển khai|timeline|ngân sách|budget)/i;
-  const chosen = [];
-  const seen = new Set();
-  const add = (text) => {
-    const clean = String(text || "").replace(/\s+/g, " ").trim();
-    if (!clean) return;
-    const key = clean.toLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
-    chosen.push(clean);
-  };
+function renderStructuredSummaryBrief(box, brief) {
+  const lines = summaryBriefLines(brief);
+  if (!lines.length) return false;
+  const html = lines.map((line) => `<p>${escapeHtml(line)}</p>`).join("");
+  box.insertAdjacentHTML("beforeend", html);
+  return true;
+}
 
-  sentences.filter((sentence) => executivePattern.test(sentence)).forEach(add);
-  sentences.forEach(add);
-  return chosen.slice(0, 3);
+function renderFallbackSummary(box, meeting) {
+  const rawSummary = meeting?.summary || "No executive summary yet.";
+  fallbackSummaryLines(rawSummary).forEach((sentence) => {
+    box.insertAdjacentHTML("beforeend", `<p>${escapeHtml(sentence)}</p>`);
+  });
 }
 
 function renderExecutiveSummary(meeting) {
   const box = $("activeSummary");
   const label = meeting ? "Meeting summary" : "Summary";
-  const readable = executiveSummaryLines(meeting);
-  box.innerHTML = `
-    <span class="summary-label">${escapeHtml(label)}</span>
-    ${readable.map((sentence) => `<p>${escapeHtml(sentence)}</p>`).join("")}
-  `;
+  box.innerHTML = `<span class="summary-label">${escapeHtml(label)}</span>`;
+  if (!meeting) {
+    box.insertAdjacentHTML("beforeend", "<p>Load meetings or ingest a transcript to start building a cross-meeting decision memory layer.</p>");
+    return;
+  }
+  if (!renderStructuredSummaryBrief(box, meeting.summary_brief)) {
+    renderFallbackSummary(box, meeting);
+  }
 }
 
 function renderMeetingPlayer() {
   const m = state.active;
   const audio = $("meetingAudio");
   const button = $("playerToggleBtn");
-  const label = $("playerLabel");
   const time = $("playerTime");
   const canPlay = Boolean(m?.id && m.can_play_audio);
   audio.pause();
   button.classList.remove("playing");
   time.textContent = "00:00";
+  updatePlayerProgress(0, 0);
   if (!canPlay) {
     audio.removeAttribute("src");
     audio.load();
     button.disabled = true;
-    label.textContent = m && isPlayableSourceFile(m.source_file) ? "Audio not stored; re-upload to enable playback" : (m ? "No audio for this meeting" : "No audio selected");
     return;
   }
   audio.src = API.audio(m.id);
   button.disabled = false;
-  label.textContent = m.source_file || `Meeting #${m.id}`;
+}
+
+function updatePlayerProgress(current, duration) {
+  const percent = duration > 0 ? Math.max(0, Math.min(100, (current / duration) * 100)) : 0;
+  $("playerProgressFill").style.width = `${percent}%`;
 }
 
 async function toggleMeetingPlayback() {
@@ -680,18 +844,12 @@ async function seekToTimestamp(timestamp) {
 
 function renderDigest() {
   const m = state.active || {};
-  const facts = m.facts || [];
-  const factDecisions = facts.filter((f) => f.type === "quyết định" || f.type === "cam kết");
   const currentContradictions = activeContradictions();
   const currentResurfaced = activeResurfaced();
-  const decisionRows = [
-    ...(m.key_points || []).map((text) => ({ text })),
-    ...(m.decisions || []).map((d) => ({ text: d.text, timestamp: d.timestamp, detail: "Decision" })),
-    ...factDecisions.map((f) => ({ text: `${f.subject}: ${f.statement}`, timestamp: f.timestamp, detail: `${f.type} · ${f.status}` })),
-  ];
+  const decisionRows = (m.decisions || []).map((d) => ({ text: d.text, timestamp: d.timestamp }));
   const contradictionRows = [
     ...currentContradictions.map((c) => ({
-      text: `${c.subject}: ${c.explanation}`,
+      text: contradictionText(c),
       timestamp: c.new?.timestamp || c.old?.timestamp,
       severity: c.severity,
       cites: contradictionCites(c),
@@ -703,7 +861,7 @@ function renderDigest() {
       cites: contradictionCites(r),
     })),
   ];
-  $("decisions").innerHTML = listHtml(decisionRows, (d) => renderLine(d.text, d.timestamp, d.detail));
+  $("decisions").innerHTML = listHtml(decisionRows, (d) => renderLine(d.text, d.timestamp));
   $("contradictionsForgotten").innerHTML = listHtml(contradictionRows, (r) => renderLine(r.text, r.timestamp, r.detail, `${r.severity ? severityBadge(r.severity) : ""}${r.cites || ""}`));
   $("risks").innerHTML = listHtml(m.risks, (x) => renderLine(x));
 }
@@ -733,14 +891,17 @@ function renderMemory() {
             <span class="line-meta">
               ${timestampButton(item.timestamp)}
               <span>${escapeHtml(actionMetaText(item))}</span>
-              <button type="button" class="assign-toggle" data-assign-toggle data-action-id="${item.id}">Assign ✉</button>
+              <button type="button" class="assign-toggle icon-assign-toggle" data-assign-toggle data-action-id="${item.id}" aria-label="Assign owner">
+                <img src="./assets/add-user.png?v=20260616" alt="" aria-hidden="true">
+              </button>
             </span>
           </span>
         </label>
         <div class="assign-form" data-assign-form data-action-id="${item.id}" hidden>
           <input class="assign-owner" data-assign-owner type="text" placeholder="Người phụ trách" value="${escapeHtml(owner)}">
-          <input class="assign-email" data-assign-email type="email" placeholder="email (để trống nếu không gửi)">
-          <button type="button" class="assign-send" data-assign-send data-action-id="${item.id}">Lưu &amp; gửi</button>
+          <button type="button" class="assign-send" data-assign-owner-save data-action-id="${item.id}">Assign</button>
+          <input class="assign-email" data-assign-email type="email" placeholder="email">
+          <button type="button" class="assign-send" data-assign-send data-action-id="${item.id}">Send</button>
         </div>
       </li>
     `;
@@ -859,66 +1020,94 @@ function highlightQuery(text, query) {
 function renderTranscriptEvidence() {
   const transcript = state.active?.transcript || "";
   const query = state.transcriptSearch.trim();
-  const mentions = collectEvidenceMentions();
   const lines = transcript.split(/\n+/).filter((line) => line.trim());
   const rows = lines.length ? lines : [transcript || "No transcript selected."];
   const filtered = rows.filter((line) => {
     if (!query) return true;
     return line.toLowerCase().includes(query.toLowerCase());
   });
-  $("transcriptText").innerHTML = filtered.map((line) => {
-    const hit = mentions.find((m) => {
-      const quote = m.quote.toLowerCase();
-      const text = line.toLowerCase();
-      return quote.includes(text.slice(0, 80)) || text.includes(quote.slice(0, 80));
-    });
-    return `
-      <div class="transcript-line">
-        <div class="line-meta">${hit ? timestampButton(hit.timestamp) : ""}${hit ? `<span>${escapeHtml(hit.label)}</span>` : ""}</div>
-        <div>${highlightQuery(line, query)}</div>
-      </div>
-    `;
-  }).join("");
+  $("transcriptText").innerHTML = filtered.map((line) => `
+    <div class="transcript-line">
+      <div>${highlightQuery(line, query)}</div>
+    </div>
+  `).join("");
 }
 
 function renderEvidence() {
   const allFacts = state.active?.facts || [];
-  $("facts").innerHTML = listHtml(allFacts, (f) => `
+  const availableTypes = [...new Set(allFacts.map((f) => String(f.type || "").trim()).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b));
+  const selectedTypes = new Set(state.evidenceTypeFilter.filter((type) => availableTypes.includes(type)));
+  if (selectedTypes.size !== state.evidenceTypeFilter.length) {
+    state.evidenceTypeFilter = [...selectedTypes];
+  }
+  renderEvidenceFilterOptions(availableTypes, selectedTypes);
+  const visibleFacts = selectedTypes.size
+    ? allFacts.filter((f) => selectedTypes.has(String(f.type || "").trim()))
+    : allFacts;
+  $("facts").innerHTML = listHtml(visibleFacts, (f) => `
     <li class="line-item">
       <p><b>${escapeHtml(f.subject)}</b>: ${escapeHtml(f.statement)}</p>
-      <div class="line-meta">${timestampButton(f.timestamp)}<span>${escapeHtml(f.type)} · ${escapeHtml(f.status)}</span></div>
+      <div class="line-meta">${timestampButton(f.timestamp)}<span>${escapeHtml(f.type)}</span></div>
     </li>
   `);
   renderTranscriptEvidence();
 }
 
+function renderEvidenceFilterOptions(availableTypes, selectedTypes) {
+  const button = $("evidenceFilterBtn");
+  const menu = $("evidenceFilterMenu");
+  const allInput = document.querySelector("[data-evidence-filter-all]");
+  button.textContent = selectedTypes.size ? `Filter by: ${selectedTypes.size}` : "Filter by: All";
+  button.disabled = !availableTypes.length;
+  button.setAttribute("aria-expanded", String(!menu.hidden));
+  if (allInput) allInput.checked = selectedTypes.size === 0;
+  $("evidenceTypeOptions").innerHTML = availableTypes.map((type) => `
+    <label class="evidence-filter-option">
+      <input type="checkbox" value="${escapeHtml(type)}" data-evidence-filter-type ${selectedTypes.has(type) ? "checked" : ""}>
+      <span>${escapeHtml(type)}</span>
+    </label>
+  `).join("");
+}
+
 function renderGlossary() {
+  const filter = state.glossaryFilter.trim().toLowerCase();
   const sorted = [...state.glossary].sort((a, b) => {
     const diff = glossaryMentionCount(b.term) - glossaryMentionCount(a.term);
     return diff || String(a.term || "").localeCompare(String(b.term || ""));
   });
+  const visibleTerms = sorted.filter((g) => glossaryMatchesFilter(g, filter));
+  const visibleDraft = state.glossaryDraft
+    .map((g, index) => ({ ...g, index }))
+    .filter((g) => glossaryMatchesFilter(g, filter));
   $("editTermsBtn").hidden = state.glossaryEditing;
   $("cancelTermsBtn").hidden = !state.glossaryEditing;
   $("saveTermsBtn").hidden = !state.glossaryEditing;
+  $("applyTermsBtn").hidden = !state.glossaryEditing;
   $("termEditorPanel").hidden = false;
   $("termEditList").hidden = !state.glossaryEditing;
   $("termAddRow").hidden = !state.glossaryEditing;
   $("glossaryList").hidden = state.glossaryEditing;
-  $("glossaryList").innerHTML = sorted.length ? sorted.map((g) => `
+  $("glossaryList").innerHTML = visibleTerms.length ? visibleTerms.map((g) => `
     <div class="term">
       <span>${g.wrong ? `${escapeHtml(g.wrong)} -> ` : ""}<b>${escapeHtml(g.term)}</b></span>
     </div>
-  `).join("") : '<div class="term">No terminology yet</div>';
-  $("termEditList").innerHTML = state.glossaryEditing && state.glossaryDraft.length ? state.glossaryDraft.map((g, index) => `
+  `).join("") : `<div class="term">${filter ? "No matching terminology" : "No terminology yet"}</div>`;
+  $("termEditList").innerHTML = state.glossaryEditing && visibleDraft.length ? visibleDraft.map((g) => `
     <div class="term is-editing">
-      <input class="term-edit-input" value="${escapeHtml(g.term || "")}" data-term-index="${index}" aria-label="Edit ${escapeHtml(g.term || "terminology")}">
+      <input class="term-edit-input" value="${escapeHtml(g.term || "")}" data-term-index="${g.index}" aria-label="Edit ${escapeHtml(g.term || "terminology")}">
       <div class="term-actions">
-        <button class="term-editor-btn" type="button" data-delete-term="${index}" aria-label="Delete ${escapeHtml(g.term || "terminology")}">×</button>
+        <button class="term-editor-btn" type="button" data-delete-term="${g.index}" aria-label="Delete ${escapeHtml(g.term || "terminology")}">×</button>
       </div>
     </div>
-  `).join("") : "";
+  `).join("") : (state.glossaryEditing ? `<div class="term">${filter ? "No matching terminology" : "No terminology yet"}</div>` : "");
   renderGlossaryPanelState();
   renderStats();
+}
+
+function glossaryMatchesFilter(item, filter) {
+  if (!filter) return true;
+  return `${item.term || ""} ${item.wrong || ""}`.toLowerCase().includes(filter);
 }
 
 function beginGlossaryEdit() {
@@ -946,7 +1135,7 @@ function addGlossaryDraftTerm() {
   inputs[inputs.length - 1]?.focus();
 }
 
-async function saveGlossaryEdit() {
+async function saveGlossaryEdit({ exitEditing = true } = {}) {
   const cleanDraft = [];
   const seen = new Set();
   state.glossaryDraft.forEach((item) => {
@@ -981,17 +1170,30 @@ async function saveGlossaryEdit() {
       requests.push(request(API.glossary, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ term: draft.term, wrong: draft.wrong || null }),
+        body: JSON.stringify({
+          term: draft.term,
+          wrong: changed ? String(original.term || "").trim() : (draft.wrong || null),
+        }),
       }));
     }
   });
 
   await Promise.all(requests);
   state.glossary = await request(API.glossary);
-  state.glossaryEditing = false;
-  state.glossaryDraft = [];
+  state.glossaryEditing = !exitEditing;
+  state.glossaryDraft = exitEditing ? [] : state.glossary.map((g) => ({ ...g }));
   $("newTermInput").value = "";
   renderGlossary();
+}
+
+async function saveGlossaryAndApplySelected() {
+  if (!state.activeId) throw new Error("Select a meeting before applying terminology.");
+  await saveGlossaryEdit();
+  const out = await request(API.applyGlossary(state.activeId), { method: "POST" });
+  await loadBaseData();
+  await selectMeeting(state.activeId, false);
+  renderAll();
+  showToast(out.changed ? "Refreshed meeting with updated terminology" : "Refreshed meeting analysis");
 }
 
 function glossaryMentionCount(term) {
@@ -1196,7 +1398,41 @@ async function updateMeetingName(id, title) {
     state.active = { ...state.active, ...out };
   }
   renderAll();
-  showToast("Meeting name updated");
+}
+
+async function updateMeetingGroup(id, groupTitle) {
+  const clean = groupTitle.trim();
+  if (!id || !clean) return;
+  const out = await request(API.updateMeeting(id), {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ group_title: clean }),
+  });
+  state.meetings = state.meetings.map((m) => (m.id === id ? { ...m, ...out } : m));
+  if (state.activeId === id) {
+    state.active = { ...state.active, ...out };
+  }
+  renderAll();
+}
+
+async function renameMeetingGroup(oldGroupTitle, newGroupTitle) {
+  const oldClean = oldGroupTitle.trim();
+  const newClean = newGroupTitle.trim();
+  if (!oldClean || !newClean || oldClean === newClean) return;
+  await request(API.renameGroup, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ old_group_title: oldClean, new_group_title: newClean }),
+  });
+  state.meetings = state.meetings.map((m) => {
+    const current = m.group_title || deriveMeetingGroup(m);
+    return current === oldClean ? { ...m, group_title: newClean } : m;
+  });
+  if (state.active) {
+    const current = state.active.group_title || deriveMeetingGroup(state.active);
+    if (current === oldClean) state.active = { ...state.active, group_title: newClean };
+  }
+  renderAll();
 }
 
 async function sendQuestion(question) {
@@ -1205,7 +1441,7 @@ async function sendQuestion(question) {
   const answer = await request(API.ask, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ question }),
+    body: JSON.stringify({ question, meeting_id: state.activeId }),
   });
   state.chat.push({ role: "assistant", text: answer.answer || "No answer.", citations: answer.citations || [] });
   renderChat();
@@ -1326,6 +1562,7 @@ async function ingestMeeting() {
   const mode = $("ingestMode").value;
   const file = mode === "recording" ? state.recordedFile : (mode === "upload" ? $("ingestFile").files[0] : null);
   const text = mode === "transcript" ? $("ingestText").value.trim() : "";
+  const jobId = makeClientJobId();
   if (!file && !text) throw new Error("Choose an upload, make a recording, or paste a transcript.");
   if (file && file.size === 0) throw new Error("Selected file is empty. Choose a different file.");
   if (file && file.size > state.maxUploadBytes) throw new Error(`Selected file is larger than ${formatUploadLimit()}. Split it or use a shorter clip.`);
@@ -1335,32 +1572,26 @@ async function ingestMeeting() {
   form.append("date", $("ingestDate").value);
   form.append("extract", $("extractAudio").checked ? "true" : "false");
   form.append("on_duplicate", "new");
+  form.append("job_id", jobId);
   const signal = state.ingestAbort?.signal;
   resetUploadProgress();
   if (file) showIngestProgress();
   if (file) setIngestPercent(0);
-  setUploadStatus(file ? `Đang chuẩn bị ${file.name}. Giữ cửa sổ này mở.` : "Đang chuẩn bị transcript. Giữ cửa sổ này mở.");
+  setUploadStatus(file ? INGEST_WARNING : "Đang chuẩn bị transcript. Giữ cửa sổ này mở.");
   await request(API.health, { signal });
   let out;
-  if (file && file.size > DIRECT_UPLOAD_BYTES) {
+  if (file) {
     out = await chunkedIngestMeeting(file, text);
   } else {
+    let stopProgress = null;
     try {
-      if (file) setUploadProgress(10, "Uploading");
       out = await request(API.ingest, {
         method: "POST",
         body: form,
         signal,
-        onUploadProgress: (loaded, total) => {
-          const ratio = total > 0 ? loaded / total : 0;
-          setUploadProgress(10 + ratio * 70, "Uploading");
-        },
       });
-      if (file) setIngestPercent(85);
-    } catch (error) {
-      if (!file || !isPayloadTooLarge(error)) throw error;
-      setUploadStatus(`Đang chuẩn bị ${file.name}. Giữ cửa sổ này mở.`);
-      out = await chunkedIngestMeeting(file, text);
+    } finally {
+      if (stopProgress) stopProgress();
     }
   }
   if (file) setIngestPercent(100);
@@ -1368,7 +1599,7 @@ async function ingestMeeting() {
   clearFilePreview();
   resetUploadProgress();
   resetRecording();
-  showToast(`Ingested meeting #${out.meeting_id}`);
+  showToast(`Ingested meeting #${out.display_id || out.meeting_id}`);
   await loadBaseData();
   await selectMeeting(out.meeting_id);
 }
@@ -1387,39 +1618,52 @@ async function chunkedIngestMeeting(file, text) {
   });
   const chunkSize = session.chunk_size || state.uploadChunkBytes || DEFAULT_UPLOAD_CHUNK_BYTES;
   const totalChunks = session.total_chunks || Math.ceil(file.size / chunkSize);
-  let uploadedBytes = 0;
-  setUploadProgress(0, "Uploading");
-  for (let index = 0; index < totalChunks; index += 1) {
+  const chunkLoaded = Array(totalChunks).fill(0);
+  let nextIndex = 0;
+  function uploadedChunkBytes() {
+    return chunkLoaded.reduce((sum, value) => sum + value, 0);
+  }
+  setFileIngestProgress(0);
+  async function uploadNextChunk() {
+    const index = nextIndex;
+    nextIndex += 1;
+    if (index >= totalChunks) return;
     const start = index * chunkSize;
     const chunk = file.slice(start, Math.min(start + chunkSize, file.size));
     const chunkForm = new FormData();
     chunkForm.append("index", String(index));
     chunkForm.append("chunk", chunk, `${file.name}.part${index}`);
-    const chunkBase = (index / totalChunks) * 70;
-    const chunkSpan = 70 / totalChunks;
-    setUploadProgress(chunkBase, "Uploading");
-    setUploadStatus(`Đang tải lên ${file.name} (${index + 1}/${totalChunks}). Giữ cửa sổ này mở.`);
     await request(API.uploadChunk(session.upload_id), {
       method: "POST",
       body: chunkForm,
       signal,
       onUploadProgress: (loaded, total) => {
         const ratio = total > 0 ? loaded / total : 0;
-        setUploadProgress(chunkBase + ratio * chunkSpan, "Uploading");
+        chunkLoaded[index] = Math.max(chunkLoaded[index], chunk.size * ratio);
+        setFileIngestProgress((uploadedChunkBytes() / file.size) * 70);
       },
     });
-    uploadedBytes += chunk.size;
+    chunkLoaded[index] = chunk.size;
+    setFileIngestProgress((uploadedChunkBytes() / file.size) * 70);
+    await uploadNextChunk();
   }
-  setUploadProgress(70, "Uploading");
+  const workerCount = Math.min(CHUNK_UPLOAD_CONCURRENCY, totalChunks);
+  const workers = Array.from({ length: workerCount }, () => uploadNextChunk());
+  await Promise.all(workers);
+  setFileIngestProgress(70);
   const completeForm = new FormData();
   if (text) completeForm.append("text", text);
   completeForm.append("title", $("ingestTitle").value.trim());
   completeForm.append("date", $("ingestDate").value);
   completeForm.append("extract", $("extractAudio").checked ? "true" : "false");
   completeForm.append("on_duplicate", "new");
-  setIngestPercent(85);
-  setUploadStatus(`Đang bóc băng & phân tích ${file.name}. Giữ cửa sổ này mở.`);
-  return request(API.uploadComplete(session.upload_id), { method: "POST", body: completeForm, signal });
+  setUploadStatus(INGEST_WARNING);
+  const stopProgress = pollBackendIngestProgress(session.job_id || session.upload_id, 70);
+  try {
+    return await request(API.uploadComplete(session.upload_id), { method: "POST", body: completeForm, signal });
+  } finally {
+    stopProgress();
+  }
 }
 
 async function reanalyzeActive() {
@@ -1471,9 +1715,15 @@ async function updateActionStatus(id, status, checkbox = null) {
   showToast("Action status updated");
 }
 
-async function assignAction(id, owner, email, btn = null) {
-  if (!owner.trim()) {
-    showToast("Nhập người phụ trách");
+async function assignAction(id, owner, email, btn = null, notify = true) {
+  const cleanEmail = email.trim();
+  const cleanOwner = owner.trim() || cleanEmail;
+  if (!cleanOwner) {
+    showToast("Nhập người phụ trách hoặc email", "error");
+    return;
+  }
+  if (notify && !cleanEmail) {
+    showToast("Nhập email để gửi assignment", "error");
     return;
   }
   if (btn) btn.disabled = true;
@@ -1481,12 +1731,13 @@ async function assignAction(id, owner, email, btn = null) {
     const res = await request(API.assignAction(id), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ owner: owner.trim(), email: email.trim() || null, notify: Boolean(email.trim()) }),
+      body: JSON.stringify({ owner: cleanOwner, email: cleanEmail || null, notify }),
     });
     state.actions = state.actions.map((action) => (Number(action.id) === Number(id) ? { ...action, owner: res.owner } : action));
     renderMemory();
-    showToast(res.sent ? `Đã giao cho ${res.owner} & gửi email`
-              : res.reason === "email_disabled" ? `Đã giao cho ${res.owner} (email chưa bật)`
+    showToast(res.sent ? `Đã giao cho ${res.owner} & gửi email tới ${cleanEmail}`
+              : res.reason === "email_disabled" ? `Đã giao cho ${res.owner} (email gửi thất bại)`
+              : res.reason === "no_email" ? `Đã giao cho ${res.owner} (thiếu email)`
               : `Đã giao cho ${res.owner}`);
   } finally {
     if (btn) btn.disabled = false;
@@ -1605,14 +1856,12 @@ function bindEvents() {
   });
   $("ingestFile").addEventListener("change", () => {
     const file = $("ingestFile").files[0];
-    $("ingestFileLabel").textContent = file ? `${file.name} · ${(file.size / 1024 / 1024).toFixed(1)} MB` : "Optional audio/video upload";
+    $("ingestFileLabel").textContent = file ? `${file.name}` : "No file selected";
     updateFilePreview(file);
     if (file && file.size === 0) {
       setUploadStatus("This file is empty. Choose another file.");
     } else if (file && file.size > state.maxUploadBytes) {
       setUploadStatus(`This file is larger than ${formatUploadLimit()}. Split it before upload.`);
-    } else if (file && file.size > DIRECT_UPLOAD_BYTES) {
-      setUploadStatus("Large file detected. Memoir will upload it in chunks.");
     } else {
       setUploadStatus("");
     }
@@ -1649,8 +1898,29 @@ function bindEvents() {
     state.transcriptSearch = event.target.value;
     renderTranscriptEvidence();
   });
+  $("evidenceFilterBtn").addEventListener("click", (event) => {
+    event.stopPropagation();
+    const menu = $("evidenceFilterMenu");
+    menu.hidden = !menu.hidden;
+    $("evidenceFilterBtn").setAttribute("aria-expanded", String(!menu.hidden));
+  });
+  $("evidenceFilterMenu").addEventListener("change", (event) => {
+    if (event.target.matches("[data-evidence-filter-all]")) {
+      state.evidenceTypeFilter = [];
+      renderEvidence();
+      return;
+    }
+    state.evidenceTypeFilter = [...document.querySelectorAll("[data-evidence-filter-type]:checked")]
+      .map((input) => input.value);
+    renderEvidence();
+  });
+  document.addEventListener("click", (event) => {
+    if (!$("evidenceFilterControl").contains(event.target)) {
+      $("evidenceFilterMenu").hidden = true;
+      $("evidenceFilterBtn").setAttribute("aria-expanded", "false");
+    }
+  });
   $("reanalyzeBtn")?.addEventListener("click", () => reanalyzeActive().catch((e) => showToast(e.message)));
-  $("deleteMeetingBtn").addEventListener("click", () => deleteActive().catch((e) => showToast(e.message)));
   document.querySelectorAll("[data-scroll-target]").forEach((button) => {
     button.addEventListener("click", () => {
       const target = $(button.dataset.scrollTarget);
@@ -1663,6 +1933,10 @@ function bindEvents() {
   $("meetingAudio").addEventListener("ended", () => $("playerToggleBtn").classList.remove("playing"));
   $("meetingAudio").addEventListener("timeupdate", (event) => {
     $("playerTime").textContent = fmtClock(event.target.currentTime);
+    updatePlayerProgress(event.target.currentTime, event.target.duration);
+  });
+  $("meetingAudio").addEventListener("loadedmetadata", (event) => {
+    updatePlayerProgress(event.target.currentTime, event.target.duration);
   });
   $("meetingAudio").addEventListener("error", () => {
     $("playerToggleBtn").classList.remove("playing");
@@ -1703,13 +1977,24 @@ function bindEvents() {
       }
       return;
     }
+    const assignOwnerSave = event.target.closest("[data-assign-owner-save]");
+    if (assignOwnerSave) {
+      event.preventDefault();
+      const form = assignOwnerSave.closest("[data-assign-form]");
+      const owner = form?.querySelector("[data-assign-owner]")?.value || "";
+      assignAction(Number(assignOwnerSave.dataset.actionId), owner, "", assignOwnerSave, false).catch((e) => showToast(e.message));
+      return;
+    }
     const assignSend = event.target.closest("[data-assign-send]");
     if (assignSend) {
       event.preventDefault();
       const form = assignSend.closest("[data-assign-form]");
       const owner = form?.querySelector("[data-assign-owner]")?.value || "";
       const email = form?.querySelector("[data-assign-email]")?.value || "";
-      assignAction(Number(assignSend.dataset.actionId), owner, email, assignSend).catch((e) => showToast(e.message));
+      if (!email.trim()) {
+        form?.querySelector("[data-assign-email]")?.focus();
+      }
+      assignAction(Number(assignSend.dataset.actionId), owner, email, assignSend, true).catch((e) => showToast(e.message));
     }
   });
   document.addEventListener("keydown", (event) => {
@@ -1759,14 +2044,26 @@ function bindEvents() {
   $("cancelTermsBtn").addEventListener("click", cancelGlossaryEdit);
   $("saveTermsBtn").addEventListener("click", async () => {
     try {
-      await saveGlossaryEdit();
+      await saveGlossaryEdit({ exitEditing: false });
+      showToast("Terminology saved");
     } catch (error) {
       alert(`Could not save terminology: ${error.message}`);
+    }
+  });
+  $("applyTermsBtn").addEventListener("click", async () => {
+    try {
+      await saveGlossaryAndApplySelected();
+    } catch (error) {
+      alert(`Could not refresh meeting: ${error.message}`);
     }
   });
   $("addTermBtn").addEventListener("click", addGlossaryDraftTerm);
   $("newTermInput").addEventListener("keydown", (event) => {
     if (event.key === "Enter") addGlossaryDraftTerm();
+  });
+  $("termFilterInput").addEventListener("input", (event) => {
+    state.glossaryFilter = event.target.value;
+    renderGlossary();
   });
   $("termEditList").addEventListener("input", (event) => {
     const input = event.target.closest(".term-edit-input");

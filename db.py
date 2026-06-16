@@ -23,6 +23,7 @@ from config import DATABASE_URL
 from models import MeetingReport, KnowledgeFact, Contradiction
 
 Base = declarative_base()
+DEFAULT_OWNER_ID = "local-dev-user"
 
 # SQLite needs check_same_thread=False for Streamlit's multi-threading.
 _connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
@@ -42,6 +43,8 @@ class Meeting(Base):
     duration_sec = Column(Integer, nullable=True)    # audio length, for ≈timestamps
     chunk_map = Column(Text, nullable=True)          # JSON [{t0,c0,clen,dur}] for chunk-accurate ≈ts
     source_file = Column(String(512), nullable=True) # uploaded file name
+    group_title = Column(String(512), nullable=True) # user-controlled sidebar folder
+    owner_id = Column(String(128), index=True, nullable=True)  # simple browser/workspace owner scope
     audio_hash = Column(String(64), index=True, nullable=True)  # same-file detection
     content_hash = Column(String(64), index=True)    # dedup re-ingest (not unique: allow "save as new")
     created_at = Column(DateTime)
@@ -50,7 +53,9 @@ class Meeting(Base):
         return {
             "id": self.id, "title": self.title, "date": self.date,
             "duration_min": self.duration_min, "summary": self.summary,
-            "source_file": self.source_file, "created_at": self.created_at,
+            "source_file": self.source_file, "group_title": self.group_title,
+            "owner_id": self.owner_id,
+            "created_at": self.created_at,
         }
 
     def report(self) -> MeetingReport:
@@ -153,10 +158,11 @@ class Glossary(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     wrong = Column(String(256), nullable=True)   # mis-heard form (optional)
     term = Column(String(256))                    # canonical/correct term
+    owner_id = Column(String(128), index=True, nullable=True)
     created_at = Column(DateTime)
 
     def as_dict(self) -> dict:
-        return {"id": self.id, "wrong": self.wrong, "term": self.term}
+        return {"id": self.id, "wrong": self.wrong, "term": self.term, "owner_id": self.owner_id}
 
 
 def init_db() -> None:
@@ -168,12 +174,18 @@ def init_db() -> None:
         "duration_sec": "INTEGER",
         "chunk_map": "TEXT",
         "source_file": "VARCHAR(512)",
+        "group_title": "VARCHAR(512)",
+        "owner_id": "VARCHAR(128)",
         "audio_hash": "VARCHAR(64)",
     }
     with engine.begin() as conn:
         for name, sqltype in add.items():
             if name not in cols:
                 conn.execute(_sql(f"ALTER TABLE meetings ADD COLUMN {name} {sqltype}"))
+    glossary_cols = [c["name"] for c in inspect(engine).get_columns("glossary")]
+    with engine.begin() as conn:
+        if "owner_id" not in glossary_cols:
+            conn.execute(_sql("ALTER TABLE glossary ADD COLUMN owner_id VARCHAR(128)"))
 
 
 def _now() -> datetime:
@@ -190,26 +202,46 @@ def audio_hash(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def clean_owner_id(owner_id: str | None = None) -> str:
+    owner = (owner_id or DEFAULT_OWNER_ID).strip()
+    return owner[:128] or DEFAULT_OWNER_ID
+
+
+def derive_group_title(title: str | None = None, source_file: str | None = None) -> str:
+    base = (title or source_file or "").strip()
+    if not base:
+        return "Ungrouped"
+    for sep in (" - ", " – ", " — ", "/", ":", "|"):
+        if sep in base:
+            return base.split(sep, 1)[0].strip() or base
+    import re
+    cleaned = re.sub(r"^\d{4}[-_]\d{2}[-_]\d{2}[\s_-]*", "", base).strip()
+    return cleaned or base
+
+
 # ---------------------------------------------------------------- writes
 
 def save_meeting(report: MeetingReport, transcript: str = "", duration_sec: int | None = None,
                  source_file: str | None = None, audio_hash_val: str | None = None,
-                 dedup: bool = True, dedup_salt: str = "", chunk_map: str | None = None) -> int:
+                 dedup: bool = True, dedup_salt: str = "", chunk_map: str | None = None,
+                 owner_id: str | None = None) -> int:
     """Persist a meeting + its action items. With dedup=True, identical content
     (same title+date+transcript) returns the existing id. Pass dedup=False or a
     dedup_salt to force a separate row ('save as new')."""
     transcript = transcript or report.full_transcript
+    owner = clean_owner_id(owner_id)
     h = make_hash(report.title, report.date, transcript, salt=dedup_salt)
     with SessionLocal() as s:
         if dedup:
-            existing = s.scalar(select(Meeting.id).where(Meeting.content_hash == h))
+            existing = s.scalar(select(Meeting.id).where(Meeting.content_hash == h, Meeting.owner_id == owner))
             if existing:
                 return existing
         m = Meeting(
             title=report.title, date=report.date, duration_min=report.duration_min,
             summary=report.summary, report_json=report.model_dump_json(),
             transcript=transcript, duration_sec=duration_sec, chunk_map=chunk_map,
-            source_file=source_file, audio_hash=audio_hash_val, content_hash=h, created_at=_now(),
+            source_file=source_file, group_title=None, owner_id=owner,
+            audio_hash=audio_hash_val, content_hash=h, created_at=_now(),
         )
         s.add(m)
         s.flush()  # assign m.id
@@ -222,15 +254,20 @@ def save_meeting(report: MeetingReport, transcript: str = "", duration_sec: int 
         return m.id
 
 
-def find_by_audio_hash(h: str) -> Meeting | None:
+def find_by_audio_hash(h: str, owner_id: str | None = None) -> Meeting | None:
+    owner = clean_owner_id(owner_id)
     with SessionLocal() as s:
-        return s.scalar(select(Meeting).where(Meeting.audio_hash == h))
+        return s.scalar(select(Meeting).where(Meeting.audio_hash == h, Meeting.owner_id == owner))
 
 
-def delete_meeting(meeting_id: int) -> None:
+def delete_meeting(meeting_id: int, owner_id: str | None = None) -> bool:
     """Remove a meeting and everything derived from it (facts, actions, links,
     and contradictions referencing its facts)."""
     with SessionLocal() as s:
+        owner = clean_owner_id(owner_id) if owner_id is not None else None
+        m = s.get(Meeting, meeting_id)
+        if not m or (owner is not None and m.owner_id != owner):
+            return False
         fact_ids = list(s.scalars(select(Fact.id).where(Fact.meeting_id == meeting_id)))
         action_ids = list(s.scalars(select(Action.id).where(Action.meeting_id == meeting_id)))
         if fact_ids:
@@ -247,6 +284,7 @@ def delete_meeting(meeting_id: int) -> None:
         s.query(Action).filter(Action.meeting_id == meeting_id).delete(synchronize_session=False)
         s.query(Meeting).filter(Meeting.id == meeting_id).delete(synchronize_session=False)
         s.commit()
+        return True
 
 
 def update_transcript(meeting_id: int, transcript: str) -> None:
@@ -261,10 +299,13 @@ def update_meeting_metadata(
     meeting_id: int,
     title: str | None = None,
     source_file: str | None = None,
+    group_title: str | None = None,
+    owner_id: str | None = None,
 ) -> bool:
     with SessionLocal() as s:
         m = s.get(Meeting, meeting_id)
-        if not m:
+        owner = clean_owner_id(owner_id) if owner_id is not None else None
+        if not m or (owner is not None and m.owner_id != owner):
             return False
         if title is not None:
             new_title = title.strip() or m.title
@@ -280,15 +321,39 @@ def update_meeting_metadata(
                     pass
         if source_file is not None:
             m.source_file = source_file.strip() or m.source_file
+        if group_title is not None:
+            m.group_title = group_title.strip() or None
         s.commit()
         return True
 
 
-def update_report(meeting_id: int, report: MeetingReport) -> None:
+def rename_meeting_group(old_group_title: str, new_group_title: str, owner_id: str | None = None) -> int:
+    old_clean = old_group_title.strip()
+    new_clean = new_group_title.strip()
+    if not old_clean or not new_clean:
+        return 0
+    updated = 0
+    owner = clean_owner_id(owner_id) if owner_id is not None else None
+    with SessionLocal() as s:
+        q = select(Meeting)
+        if owner is not None:
+            q = q.where(Meeting.owner_id == owner)
+        meetings = s.scalars(q).all()
+        for m in meetings:
+            current = m.group_title or derive_group_title(m.title, m.source_file)
+            if current == old_clean:
+                m.group_title = new_clean
+                updated += 1
+        s.commit()
+    return updated
+
+
+def update_report(meeting_id: int, report: MeetingReport, owner_id: str | None = None) -> None:
     """Replace a meeting's analysis (summary/report_json) and rebuild its action_items."""
     with SessionLocal() as s:
         m = s.get(Meeting, meeting_id)
-        if not m:
+        owner = clean_owner_id(owner_id) if owner_id is not None else None
+        if not m or (owner is not None and m.owner_id != owner):
             return
         m.summary = report.summary
         m.report_json = report.model_dump_json()
@@ -385,16 +450,35 @@ def add_action_link(action_id: int, related_meeting_id: int, note: str = "") -> 
 
 # ---------------------------------------------------------------- reads
 
-def list_meetings(limit: int = 100) -> list[Meeting]:
+def list_meetings(limit: int = 100, owner_id: str | None = None) -> list[Meeting]:
+    owner = clean_owner_id(owner_id) if owner_id is not None else None
     with SessionLocal() as s:
-        return list(s.scalars(
-            select(Meeting).order_by(Meeting.date.desc(), Meeting.id.desc()).limit(limit)
-        ))
+        q = select(Meeting)
+        if owner is not None:
+            q = q.where(Meeting.owner_id == owner)
+        return list(s.scalars(q.order_by(Meeting.date.desc(), Meeting.id.desc()).limit(limit)))
 
 
-def get_meeting(meeting_id: int) -> Meeting | None:
+def get_meeting(meeting_id: int, owner_id: str | None = None) -> Meeting | None:
+    owner = clean_owner_id(owner_id) if owner_id is not None else None
     with SessionLocal() as s:
-        return s.get(Meeting, meeting_id)
+        m = s.get(Meeting, meeting_id)
+        if owner is not None and (not m or m.owner_id != owner):
+            return None
+        return m
+
+
+def display_id_for_meeting(meeting_id: int, owner_id: str | None = None) -> int | None:
+    """User-facing meeting number scoped to an owner, independent of DB primary key."""
+    with SessionLocal() as s:
+        m = s.get(Meeting, meeting_id)
+        if not m:
+            return None
+        owner = clean_owner_id(owner_id) if owner_id is not None else m.owner_id
+        q = select(func.count(Meeting.id)).where(Meeting.id <= meeting_id)
+        if owner:
+            q = q.where(Meeting.owner_id == owner)
+        return int(s.scalar(q) or 0)
 
 
 def get_fact(fact_id: int) -> Fact | None:
@@ -425,9 +509,12 @@ def facts_by_subject(subject: str, status: str | None = None) -> list[Fact]:
         return list(s.scalars(q.order_by(Fact.created_at.asc(), Fact.id.asc())))
 
 
-def all_actions(status: str | None = None) -> list[Action]:
+def all_actions(status: str | None = None, owner_id: str | None = None) -> list[Action]:
+    owner = clean_owner_id(owner_id) if owner_id is not None else None
     with SessionLocal() as s:
         q = select(Action)
+        if owner is not None:
+            q = q.join(Meeting, Action.meeting_id == Meeting.id).where(Meeting.owner_id == owner)
         if status:
             q = q.where(Action.status == status)
         return list(s.scalars(q.order_by(Action.owner, Action.id)))
@@ -483,50 +570,74 @@ def clear_resurfaced() -> None:
 
 # ---------------------------------------------------------------- glossary
 
-def add_glossary(term: str, wrong: str | None = None) -> int:
+def add_glossary(term: str, wrong: str | None = None, owner_id: str | None = None) -> int:
     term = (term or "").strip()
     wrong = (wrong or "").strip() or None
     if not term:
         return 0
+    owner = clean_owner_id(owner_id)
     with SessionLocal() as s:
         # avoid exact duplicates
         exists = s.scalar(select(Glossary.id).where(
             func.lower(Glossary.term) == term.lower(),
             (func.lower(Glossary.wrong) == wrong.lower()) if wrong else Glossary.wrong.is_(None),
+            Glossary.owner_id == owner,
         ))
         if exists:
             return exists
-        row = Glossary(term=term, wrong=wrong, created_at=_now())
+        row = Glossary(term=term, wrong=wrong, owner_id=owner, created_at=_now())
         s.add(row)
         s.commit()
         return row.id
 
 
-def list_glossary() -> list[Glossary]:
+def list_glossary(owner_id: str | None = None) -> list[Glossary]:
+    owner = clean_owner_id(owner_id) if owner_id is not None else None
     with SessionLocal() as s:
-        return list(s.scalars(select(Glossary).order_by(Glossary.id.asc())))
+        q = select(Glossary)
+        if owner is not None:
+            q = q.where(Glossary.owner_id == owner)
+        return list(s.scalars(q.order_by(Glossary.id.asc())))
 
 
-def delete_glossary(gid: int) -> None:
+def delete_glossary(gid: int, owner_id: str | None = None) -> bool:
+    owner = clean_owner_id(owner_id) if owner_id is not None else None
     with SessionLocal() as s:
-        s.query(Glossary).filter(Glossary.id == gid).delete(synchronize_session=False)
+        q = s.query(Glossary).filter(Glossary.id == gid)
+        if owner is not None:
+            q = q.filter(Glossary.owner_id == owner)
+        deleted = q.delete(synchronize_session=False)
         s.commit()
+        return bool(deleted)
 
 
-def glossary_terms() -> list[str]:
-    return [g.term for g in list_glossary()]
+def glossary_terms(owner_id: str | None = None) -> list[str]:
+    return [g.term for g in list_glossary(owner_id=owner_id)]
 
 
-def glossary_fixes() -> list[tuple[str, str]]:
-    return [(g.wrong, g.term) for g in list_glossary() if g.wrong]
+def glossary_fixes(owner_id: str | None = None) -> list[tuple[str, str]]:
+    return [(g.wrong, g.term) for g in list_glossary(owner_id=owner_id) if g.wrong]
 
 
-def counts() -> dict:
+def counts(owner_id: str | None = None) -> dict:
+    owner = clean_owner_id(owner_id) if owner_id is not None else None
     with SessionLocal() as s:
+        if owner is None:
+            meeting_count = s.scalar(select(func.count(Meeting.id))) or 0
+            fact_count = s.scalar(select(func.count(Fact.id))) or 0
+            action_count = s.scalar(select(func.count(Action.id))) or 0
+        else:
+            meeting_count = s.scalar(select(func.count(Meeting.id)).where(Meeting.owner_id == owner)) or 0
+            fact_count = s.scalar(
+                select(func.count(Fact.id)).join(Meeting, Fact.meeting_id == Meeting.id).where(Meeting.owner_id == owner)
+            ) or 0
+            action_count = s.scalar(
+                select(func.count(Action.id)).join(Meeting, Action.meeting_id == Meeting.id).where(Meeting.owner_id == owner)
+            ) or 0
         return {
-            "meetings": s.scalar(select(func.count(Meeting.id))) or 0,
-            "facts": s.scalar(select(func.count(Fact.id))) or 0,
-            "actions": s.scalar(select(func.count(Action.id))) or 0,
+            "meetings": meeting_count,
+            "facts": fact_count,
+            "actions": action_count,
             "contradictions": s.scalar(select(func.count(ContradictionRow.id))) or 0,
             "resurfaced": s.scalar(select(func.count(Resurfaced.id))) or 0,
         }

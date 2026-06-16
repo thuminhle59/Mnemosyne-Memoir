@@ -62,11 +62,11 @@ def _chat_json(prompt: str, models: tuple[str, ...]) -> dict:
 
 # ---------------------------------------------------------------- correct_terms (STT layer 3)
 
-def _effective_glossary() -> str:
+def _effective_glossary(owner_id: str | None = None) -> str:
     """Default glossary + org/team terms taught via the training guide (db)."""
     terms = [config.STT_GLOSSARY]
     try:
-        extra = db.glossary_terms()
+        extra = db.glossary_terms(owner_id=owner_id)
         if extra:
             terms.append(", ".join(extra))
     except Exception:  # noqa: BLE001 - DB not ready
@@ -74,14 +74,16 @@ def _effective_glossary() -> str:
     return ", ".join(t for t in terms if t)
 
 
-def _correct_prompt(text: str) -> str:
+def _correct_prompt(text: str, owner_id: str | None = None) -> str:
     return (
         "Dưới đây là transcript do nhận dạng giọng nói tạo ra, có thể nghe nhầm DANH TỪ RIÊNG.\n"
-        f"Glossary tên đúng (CHỈ là gợi ý, có thể KHÔNG xuất hiện trong audio): {_effective_glossary()}\n"
+        f"Glossary tên đúng (CHỈ là gợi ý, có thể KHÔNG xuất hiện trong audio): {_effective_glossary(owner_id=owner_id)}\n"
         "Nhiệm vụ: CHỈ sửa những danh từ riêng bị nghe nhầm cho khớp glossary KHI NGỮ CẢNH "
         "cho thấy đúng là nó. Nếu transcript nói về chủ đề khác và không liên quan glossary, "
+        "phải giữ nguyên tên riêng đã nghe được như Nova, Merchant, Portal nếu chúng đã hợp lý. "
         "GIỮ NGUYÊN, KHÔNG thêm thắt. Tuyệt đối KHÔNG diễn giải lại, KHÔNG tóm tắt, KHÔNG đổi "
-        "từ thường — giữ nguyên 100% nội dung, chỉ thay đúng các tên bị sai.\n"
+        "từ thường — giữ nguyên 100% nội dung, chỉ thay đúng các tên bị sai. "
+        f"{analyze.PRESERVE_ENGLISH_TERMS_RULE}\n"
         'Trả về DUY NHẤT JSON: {"corrected": "<transcript đã sửa>"}\n\n'
         f"Transcript:\n{text}"
     )
@@ -106,22 +108,60 @@ def extract_glossary_terms(guide_text: str) -> list[str]:
     return [t.strip() for t in terms if isinstance(t, str) and t.strip()]
 
 
-def learn_glossary(guide_text: str) -> list[str]:
+def learn_glossary(guide_text: str, owner_id: str | None = None) -> list[str]:
     """Extract terms from a guide and persist them; returns the terms saved."""
     terms = extract_glossary_terms(guide_text)
     for t in terms:
-        db.add_glossary(t)
+        db.add_glossary(t, owner_id=owner_id)
     return terms
 
 
-def correct_terms(text: str) -> str:
+def _is_known_correction_source(term: str, owner_id: str | None = None) -> bool:
+    for pattern, _repl in [*config.STT_NORMALIZE, *config.STT_TERM_FIXES]:
+        if re.search(pattern, term, flags=re.IGNORECASE):
+            return True
+    try:
+        for wrong, _target in db.glossary_fixes(owner_id=owner_id):
+            pattern = r"\b" + re.escape(wrong).replace(r"\ ", r"[\s-]?") + r"\b"
+            if re.search(pattern, term, flags=re.IGNORECASE):
+                return True
+    except Exception:  # noqa: BLE001 - DB not ready
+        pass
+    return False
+
+
+def _protected_proper_nouns(text: str, owner_id: str | None = None) -> set[str]:
+    """Proper nouns already present in STT output that are not known misspellings.
+
+    The LLM correction layer may use glossary hints, but it must not replace a
+    real project/customer name such as "Nova" with a glossary term like
+    "OpenClaw" just because the glossary contains it.
+    """
+    terms = set()
+    for term in re.findall(r"\b[A-Z][A-Za-z0-9]*(?:[A-Z][A-Za-z0-9]*)*\b", text or ""):
+        if len(term) < 3:
+            continue
+        if term.isupper() and len(term) <= 3:
+            continue
+        if _is_known_correction_source(term, owner_id=owner_id):
+            continue
+        terms.add(term)
+    return terms
+
+
+def _keeps_protected_proper_nouns(original: str, corrected: str, owner_id: str | None = None) -> bool:
+    output = corrected.lower()
+    return all(term.lower() in output for term in _protected_proper_nouns(original, owner_id=owner_id))
+
+
+def correct_terms(text: str, owner_id: str | None = None) -> str:
     """Context-aware proper-noun fix via LLM. Safe on unknown topics (won't force
     glossary terms). Guardrailed: if the model returns nothing or rewrites too much
     (length drifts far from the original), the original is kept."""
     if not config.STT_LLM_CORRECT or not text.strip():
         return text
     try:
-        data = _chat_json(_correct_prompt(text),
+        data = _chat_json(_correct_prompt(text, owner_id=owner_id),
                           (config.STT_CORRECT_MODEL, config.REASONING_FALLBACK_MODEL))
     except ValueError:
         return text
@@ -130,6 +170,8 @@ def correct_terms(text: str) -> str:
         return text
     ratio = len(out) / max(len(text), 1)
     if ratio < 0.6 or ratio > 1.6:   # over-edit / truncation guard -> keep original
+        return text
+    if not _keeps_protected_proper_nouns(text, out, owner_id=owner_id):
         return text
     return out
 
@@ -144,6 +186,7 @@ def _facts_prompt(report: MeetingReport, transcript: str) -> str:
         "có thể kèm hạn), 'số liệu' (con số/chỉ số/ngày tháng cụ thể), 'fact' (sự kiện/trạng thái "
         "khách quan), 'giả định', 'rủi ro'.\n"
         "QUY TẮC CHẤT LƯỢNG (BẮT BUỘC — quyết định độ chính xác khi đối chiếu về sau):\n"
+        f"0. {analyze.PRESERVE_ENGLISH_TERMS_RULE}\n"
         "1. SUBJECT: cụm danh từ NGẮN, CHUẨN HOÁ, và NHẤT QUÁN cho cùng một chủ đề — DÙNG LẠI "
         "đúng MỘT cách gọi cho cùng một việc (vd luôn dùng 'ngày go-live', đừng lúc 'ngày deploy' "
         "lúc 'ngày canary' lúc 'quyết định go canary'). KHÔNG nhét động từ/kết luận vào subject.\n"
@@ -155,7 +198,9 @@ def _facts_prompt(report: MeetingReport, transcript: str) -> str:
         "câu gốc rõ ràng thì để null — KHÔNG bịa quote.\n"
         "4. Mỗi claim chỉ MỘT fact; GỘP các câu nhắc lại cùng nội dung. BỎ QUA chào hỏi, nói đùa, "
         "câu xã giao và thủ tục vụn vặt không có giá trị ghi nhớ.\n"
-        "5. KHÔNG trích META-BÌNH LUẬN của biên bản về chính nó (vd 'Quyết định ghi nhận:...', "
+        "5. ĐƯỢC trích fact hoặc quyết định từ phần Tóm tắt nếu đó là kết luận/trạng thái thật của cuộc họp "
+        "và không có câu gốc nguyên văn rõ hơn trong transcript. Khi dùng claim từ Tóm tắt, quote có thể là null.\n"
+        "6. KHÔNG trích META-BÌNH LUẬN của biên bản về chính nó (vd 'Quyết định ghi nhận:...', "
         "'Ghi nhận có mâu thuẫn...', 'đánh dấu conflict để họp sau xử lý') thành fact. Hãy trích "
         "NỘI DUNG GỐC bên dưới (giá trị/quyết định thực), KHÔNG trích câu nói rằng 'có mâu thuẫn'. "
         "Subject KHÔNG được là 'conflict...'/'ghi nhận...'.\n"
@@ -472,14 +517,14 @@ def scan_forgotten() -> list[dict]:
     return detect_forgotten_decisions(models)
 
 
-def resurfaced_view() -> list[dict]:
+def resurfaced_view(owner_id: str | None = None) -> list[dict]:
     """Resurfaced decisions enriched for the UI (citations + ≈timestamps)."""
     out = []
     for r in db.all_resurfaced():
         out.append({
             "subject": r.subject, "kind": r.kind, "explanation": r.explanation,
-            "old": _fact_citation(r.old_fact_id),   # lần nêu/bác trước
-            "new": _fact_citation(r.new_fact_id),   # lần nhắc lại
+            "old": _fact_citation(r.old_fact_id, owner_id=owner_id),   # lần nêu/bác trước
+            "new": _fact_citation(r.new_fact_id, owner_id=owner_id),   # lần nhắc lại
         })
     return out
 
@@ -490,7 +535,7 @@ def ingest(text: str | None = None, audio: bytes | None = None,
            date: str | None = None, title: str | None = None,
            language: str = "vi", filename: str = "meeting.wav",
            extract: bool = True, source_file: str | None = None,
-           on_duplicate: str = "new") -> dict:
+           on_duplicate: str = "new", owner_id: str | None = None) -> dict:
     """Full ingest pipeline. Accepts a transcript directly or audio/video bytes.
 
     For audio/video: transcode to mono-16k WAV (the STT endpoint only accepts WAV),
@@ -505,61 +550,86 @@ def ingest(text: str | None = None, audio: bytes | None = None,
     duration_sec = None
     chunk_map = None
     ah = None
+    duplicate_of = None
+    cloned_facts: list[KnowledgeFact] | None = None
     if text is None:
         if not audio:
             raise ValueError("ingest needs text or audio")
         ah = db.audio_hash(audio)                       # hash RAW upload (same file -> same hash)
-        existing = db.find_by_audio_hash(ah)
+        existing = db.find_by_audio_hash(ah, owner_id=owner_id)
         if existing and on_duplicate == "skip":
             return {"meeting_id": existing.id, "report": existing.report(), "facts": [],
                     "contradictions": [], "skipped": True, "duplicate_of": existing.id}
         if existing and on_duplicate == "overwrite":
-            db.delete_meeting(existing.id)
-
-        import media
-        chunks = media.audio_to_wav_chunks(
-            audio, filename, chunk_sec=config.STT_CHUNK_SEC, do_extract=extract,
-        )
-        # Per chunk, correction order: STT (raw) -> LLM context-aware fix (primary)
-        # -> regex cleanup (deterministic guarantee for known terms). Per-chunk so
-        # each LLM correction call stays small/bounded.
-        parts = []
-        chunk_entries = []        # [{t0,c0,clen,dur}] for chunk-accurate ≈timestamps
-        char_cursor = 0
-        time_cursor = 0.0
-        for c in chunks:
-            d = media.wav_duration(c)
-            t0 = time_cursor
-            time_cursor += d
-            t = transcribe.transcribe(c, filename="audio.wav", language=language)
-            t = correct_terms(t)                  # layer chính: LLM hiểu ngữ cảnh
-            t = transcribe.apply_corrections(t)   # layer sau: regex chuẩn hoá/đảm bảo
-            if not t:
-                continue
-            if parts:
-                char_cursor += 1                  # the "\n" join separator
-            chunk_entries.append({"t0": round(t0, 2), "c0": char_cursor,
-                                  "clen": len(t), "dur": round(d, 2)})
-            char_cursor += len(t)
-            parts.append(t)
-        text = "\n".join(parts)
-        duration_sec = int(time_cursor) or None
-        chunk_map = json.dumps(chunk_entries) if chunk_entries else None
+            db.delete_meeting(existing.id, owner_id=owner_id)
+            existing = None
+        if existing and on_duplicate == "new":
+            duplicate_of = existing.id
+            report = existing.report()
+            if date:
+                report.date = date
+            if title:
+                report.title = title
+            text = existing.transcript or report.full_transcript
+            report.full_transcript = text
+            duration_sec = existing.duration_sec
+            chunk_map = existing.chunk_map
+            cloned_facts = [
+                f.to_model().model_copy(update={"source_meeting_id": None})
+                for f in db.facts_of_meeting(existing.id)
+            ]
+        else:
+            import media
+            chunks = media.audio_to_wav_chunks(
+                audio, filename, chunk_sec=config.STT_CHUNK_SEC, do_extract=extract,
+            )
+            # Per chunk, correction order: STT (raw) -> LLM context-aware fix (primary)
+            # -> regex cleanup (deterministic guarantee for known terms). Per-chunk so
+            # each LLM correction call stays small/bounded.
+            parts = []
+            chunk_entries = []        # [{t0,c0,clen,dur}] for chunk-accurate ≈timestamps
+            char_cursor = 0
+            time_cursor = 0.0
+            for c in chunks:
+                d = media.wav_duration(c)
+                t0 = time_cursor
+                time_cursor += d
+                t = transcribe.transcribe(c, filename="audio.wav", language=language)
+                t = correct_terms(t, owner_id=owner_id) if owner_id is not None else correct_terms(t)
+                t = (
+                    transcribe.apply_corrections(t, owner_id=owner_id)
+                    if owner_id is not None
+                    else transcribe.apply_corrections(t)
+                )
+                if not t:
+                    continue
+                if parts:
+                    char_cursor += 1                  # the "\n" join separator
+                chunk_entries.append({"t0": round(t0, 2), "c0": char_cursor,
+                                      "clen": len(t), "dur": round(d, 2)})
+                char_cursor += len(t)
+                parts.append(t)
+            text = "\n".join(parts)
+            duration_sec = int(time_cursor) or None
+            chunk_map = json.dumps(chunk_entries) if chunk_entries else None
     if not text.strip():
         raise ValueError("empty transcript")
 
-    report = analyze.analyze(text, date=date)
-    if title:
-        report.title = title
+    if cloned_facts is None:
+        report = analyze.analyze(text, date=date)
+        if title:
+            report.title = title
+        report = _apply_glossary_to_report(report, owner_id=owner_id)
 
     # "new" must not collapse into an identical prior row -> force a separate row.
     salt = str(_dt.datetime.now().timestamp()) if on_duplicate == "new" else ""
     meeting_id = db.save_meeting(
         report, transcript=text, duration_sec=duration_sec, source_file=source_file,
         audio_hash_val=ah, dedup=(on_duplicate != "new"), dedup_salt=salt, chunk_map=chunk_map,
+        owner_id=owner_id,
     )
 
-    facts = extract_facts(report, text)
+    facts = cloned_facts if cloned_facts is not None else [_apply_glossary_to_fact(f, owner_id=owner_id) for f in extract_facts(report, text)]
     for f in facts:
         f.source_meeting_id = meeting_id
     db.save_facts(meeting_id, facts)
@@ -574,23 +644,79 @@ def ingest(text: str | None = None, audio: bytes | None = None,
         "contradictions": contradictions,
         "forgotten": forgotten,
         "skipped": False,
-        "duplicate_of": None,
+        "duplicate_of": duplicate_of,
     }
 
 
-def reanalyze(meeting_id: int, transcript: str) -> dict:
+def _apply_glossary_text(value: str | None, owner_id: str | None = None) -> str | None:
+    if value is None:
+        return None
+    if owner_id is None:
+        return transcribe.apply_corrections(value)
+    return transcribe.apply_corrections(value, owner_id=owner_id)
+
+
+def _apply_glossary_to_report(report: MeetingReport, owner_id: str | None = None) -> MeetingReport:
+    """Apply deterministic glossary mappings to every user-visible analysis field."""
+    brief = report.summary_brief
+    return report.model_copy(update={
+        "title": _apply_glossary_text(report.title, owner_id=owner_id) or report.title,
+        "summary": _apply_glossary_text(report.summary, owner_id=owner_id) or report.summary,
+        "summary_brief": brief.model_copy(update={
+            "context": _apply_glossary_text(brief.context, owner_id=owner_id),
+            "decisions": [_apply_glossary_text(item, owner_id=owner_id) or item for item in brief.decisions],
+            "risk": _apply_glossary_text(brief.risk, owner_id=owner_id),
+            "next_step": _apply_glossary_text(brief.next_step, owner_id=owner_id),
+        }),
+        "key_points": [_apply_glossary_text(item, owner_id=owner_id) or item for item in report.key_points],
+        "decisions": [
+            d.model_copy(update={
+                "text": _apply_glossary_text(d.text, owner_id=owner_id) or d.text,
+                "quote": _apply_glossary_text(d.quote, owner_id=owner_id),
+            })
+            for d in report.decisions
+        ],
+        "action_items": [
+            a.model_copy(update={
+                "task": _apply_glossary_text(a.task, owner_id=owner_id) or a.task,
+                "owner": _apply_glossary_text(a.owner, owner_id=owner_id),
+                "deadline": _apply_glossary_text(a.deadline, owner_id=owner_id),
+                "quote": _apply_glossary_text(a.quote, owner_id=owner_id),
+            })
+            for a in report.action_items
+        ],
+        "risks": [_apply_glossary_text(item, owner_id=owner_id) or item for item in report.risks],
+        "open_questions": [_apply_glossary_text(item, owner_id=owner_id) or item for item in report.open_questions],
+        "next_meeting": _apply_glossary_text(report.next_meeting, owner_id=owner_id),
+        "full_transcript": _apply_glossary_text(report.full_transcript, owner_id=owner_id) or report.full_transcript,
+    })
+
+
+def _apply_glossary_to_fact(fact: KnowledgeFact, owner_id: str | None = None) -> KnowledgeFact:
+    return fact.model_copy(update={
+        "subject": _apply_glossary_text(fact.subject, owner_id=owner_id) or fact.subject,
+        "statement": _apply_glossary_text(fact.statement, owner_id=owner_id) or fact.statement,
+        "quote": _apply_glossary_text(fact.quote, owner_id=owner_id),
+    })
+
+
+def reanalyze(meeting_id: int, transcript: str, owner_id: str | None = None) -> dict:
     """Re-run analysis after a transcript edit: update transcript, regenerate the
     report + facts, and re-check contradictions. Keeps the meeting's title/date."""
-    m = db.get_meeting(meeting_id)
+    m = db.get_meeting(meeting_id, owner_id=owner_id) if owner_id is not None else db.get_meeting(meeting_id)
     if not m:
         raise ValueError(f"meeting {meeting_id} not found")
     db.update_transcript(meeting_id, transcript)
     report = analyze.analyze(transcript, date=m.date)
     report.title = m.title
     report.full_transcript = transcript
-    db.update_report(meeting_id, report)
+    report = _apply_glossary_to_report(report, owner_id=owner_id)
+    if owner_id is not None:
+        db.update_report(meeting_id, report, owner_id=owner_id)
+    else:
+        db.update_report(meeting_id, report)
     db.clear_facts(meeting_id)
-    facts = extract_facts(report, transcript)
+    facts = [_apply_glossary_to_fact(f, owner_id=owner_id) for f in extract_facts(report, transcript)]
     for f in facts:
         f.source_meeting_id = meeting_id
     db.save_facts(meeting_id, facts)
@@ -598,6 +724,35 @@ def reanalyze(meeting_id: int, transcript: str) -> dict:
     forgotten = detect_forgotten_decisions(facts)
     return {"meeting_id": meeting_id, "report": report, "facts": facts,
             "contradictions": contradictions, "forgotten": forgotten}
+
+
+def apply_glossary_to_meeting(meeting_id: int, owner_id: str | None = None) -> dict:
+    """Apply current glossary corrections to one meeting transcript, then reanalyze.
+
+    This intentionally scopes the blast radius to the selected meeting. It uses the
+    same correction chain as ingest: context-aware LLM correction first, then the
+    deterministic glossary/normalization pass.
+    """
+    m = db.get_meeting(meeting_id, owner_id=owner_id) if owner_id is not None else db.get_meeting(meeting_id)
+    if not m:
+        raise ValueError(f"meeting {meeting_id} not found")
+    original = m.transcript or ""
+    corrected_base = correct_terms(original, owner_id=owner_id) if owner_id is not None else correct_terms(original)
+    corrected = (
+        transcribe.apply_corrections(corrected_base, owner_id=owner_id)
+        if owner_id is not None
+        else transcribe.apply_corrections(corrected_base)
+    )
+    original_title = getattr(m, "title", "") or ""
+    corrected_title = _apply_glossary_text(original_title, owner_id=owner_id) or original_title
+    changed = corrected != original or corrected_title != original_title
+    if original_title and corrected_title != original_title:
+        if owner_id is not None:
+            db.update_meeting_metadata(meeting_id, title=corrected_title, owner_id=owner_id)
+        else:
+            db.update_meeting_metadata(meeting_id, title=corrected_title)
+    out = reanalyze(meeting_id, corrected, owner_id=owner_id) if owner_id is not None else reanalyze(meeting_id, corrected)
+    return {**out, "changed": changed}
 
 
 # ------------------------------------------------- timestamp + contradiction view
@@ -619,6 +774,17 @@ def estimate_timestamp(meeting, quote: str) -> str | None:
     if idx < 0 and len(needle) > 20:          # try a prefix if the full quote drifted
         idx = hay.find(needle[:20])
     if idx < 0:
+        tokens = [t for t in re.findall(r"[\wÀ-ỹ]+", needle) if len(t) >= 4]
+        for token in tokens:
+            candidate = hay.find(token)
+            if candidate < 0:
+                continue
+            window = hay[candidate:candidate + max(len(needle) * 2, 120)]
+            hits = sum(1 for t in tokens if t in window)
+            if hits >= max(2, min(4, len(tokens) // 2)):
+                idx = candidate
+                break
+    if idx < 0:
         return None
 
     sec = None
@@ -637,14 +803,16 @@ def estimate_timestamp(meeting, quote: str) -> str | None:
     return f"{sec // 60:02d}:{sec % 60:02d}"
 
 
-def _fact_citation(fact_id: int | None) -> dict | None:
+def _fact_citation(fact_id: int | None, owner_id: str | None = None) -> dict | None:
     """Expand a fact id into {statement, quote, meeting_id, meeting_title, date, timestamp}."""
     if not fact_id:
         return None
     f = db.get_fact(fact_id)
     if not f:
         return None
-    m = db.get_meeting(f.meeting_id)
+    m = db.get_meeting(f.meeting_id, owner_id=owner_id)
+    if not m:
+        return None
     return {
         "statement": f.statement,
         "quote": f.quote or "",
@@ -655,13 +823,13 @@ def _fact_citation(fact_id: int | None) -> dict | None:
     }
 
 
-def contradiction_view() -> list[dict]:
+def contradiction_view(owner_id: str | None = None) -> list[dict]:
     """All contradictions enriched for the UI: explanation + both sides' quotes,
     source meeting citations, and approximate listen-back timestamps."""
     out = []
     for c in db.all_contradictions():
-        old = _fact_citation(c.fact_a_id)
-        new = _fact_citation(c.fact_b_id)
+        old = _fact_citation(c.fact_a_id, owner_id=owner_id)
+        new = _fact_citation(c.fact_b_id, owner_id=owner_id)
         if not old or not new:
             continue
         out.append({
@@ -677,6 +845,7 @@ def contradiction_view() -> list[dict]:
 # ---------------------------------------------------------------- ask (recall Q&A)
 
 def _relevant_contradictions(question: str, ctx: "retrieve_mod.RetrievedContext",
+                             allowed_ids: set[int] | None = None,
                              cap: int = 8) -> list[dict]:
     """Recorded contradictions whose subject overlaps the question or the retrieved
     facts — so Q&A can proactively flag a decision that changed/conflicted over time."""
@@ -687,6 +856,11 @@ def _relevant_contradictions(question: str, ctx: "retrieve_mod.RetrievedContext"
         return []
     out = []
     for c in contradiction_view():
+        old, new = c.get("old"), c.get("new")
+        if allowed_ids is not None and (
+            not old or not new or old.get("meeting_id") not in allowed_ids or new.get("meeting_id") not in allowed_ids
+        ):
+            continue
         if retrieve_mod._tokens(c["subject"]) & topic:
             out.append(c)
         if len(out) >= cap:
@@ -710,6 +884,48 @@ def _contradiction_block(items: list[dict]) -> str:
             lines.append(f"    mới: «{new['statement']}» (meeting_id={new['meeting_id']}, "
                          f"{new['meeting_title']} — {new['date']})")
     return "\n".join(lines)
+
+
+def _strip_extension(value: str) -> str:
+    return re.sub(r"\.[a-z0-9]{2,5}$", "", value or "", flags=re.IGNORECASE)
+
+
+def meeting_group_topic(meeting) -> str:
+    """Mirror the sidebar grouping rule: explicit group_title first, title fallback."""
+    explicit = (getattr(meeting, "group_title", None) or "").strip()
+    if explicit:
+        return explicit
+    base = _strip_extension(getattr(meeting, "title", None) or getattr(meeting, "source_file", None) or "").strip()
+    if not base:
+        return "Ungrouped"
+    parts = [p.strip() for p in re.split(r"\s[-–—]\s|/|:|\|", base) if p.strip()]
+    if len(parts) > 1:
+        return parts[0]
+    cleaned = re.sub(r"^\d{4}[-_]\d{2}[-_]\d{2}[\s_-]*", "", base, flags=re.IGNORECASE).strip()
+    return cleaned or base
+
+
+def _meeting_scope_ids(meeting_id: int | None, owner_id: str | None = None) -> set[int] | None:
+    if not meeting_id:
+        if owner_id is None:
+            return None
+        return {m.id for m in db.list_meetings(limit=10000, owner_id=owner_id)}
+    active = db.get_meeting(meeting_id, owner_id=owner_id)
+    if not active:
+        return set()
+    topic = meeting_group_topic(active)
+    return {m.id for m in db.list_meetings(limit=10000, owner_id=owner_id) if meeting_group_topic(m) == topic}
+
+
+def _scope_context(ctx: "retrieve_mod.RetrievedContext", allowed_ids: set[int] | None) -> "retrieve_mod.RetrievedContext":
+    if allowed_ids is None:
+        return ctx
+    if not allowed_ids:
+        return retrieve_mod.RetrievedContext()
+    scoped_meetings = [m for m in db.list_meetings(limit=10000) if m.id in allowed_ids]
+    scoped_meetings = sorted(scoped_meetings, key=lambda m: (m.date or "", m.id or 0))
+    scoped_facts = [f for f in ctx.facts if f.meeting_id in allowed_ids]
+    return retrieve_mod.RetrievedContext(meetings=scoped_meetings, facts=scoped_facts)
 
 
 def _ts_seconds(ts: str | None) -> int:
@@ -773,13 +989,14 @@ def _ask_prompt(question: str, context: str) -> str:
     )
 
 
-def ask(question: str, limit: int = 50) -> Answer:
-    """Historical Recall Q&A across the full meeting memory, with citations."""
-    ctx = retrieve_mod.retrieve(question, limit=limit)
+def ask(question: str, limit: int = 50, meeting_id: int | None = None, owner_id: str | None = None) -> Answer:
+    """Historical Recall Q&A, scoped to the active meeting's group/topic when supplied."""
+    allowed_ids = _meeting_scope_ids(meeting_id, owner_id=owner_id)
+    ctx = _scope_context(retrieve_mod.retrieve(question, limit=limit), allowed_ids)
     if ctx.is_empty():
         return Answer(text="Chưa có cuộc họp nào được ghi nhớ.", citations=[])
 
-    context = _context_block(ctx) + _contradiction_block(_relevant_contradictions(question, ctx))
+    context = _context_block(ctx) + _contradiction_block(_relevant_contradictions(question, ctx, allowed_ids))
     try:
         data = _chat_json(
             _ask_prompt(question, context),
@@ -796,6 +1013,8 @@ def ask(question: str, limit: int = 50) -> Answer:
     for c in data.get("citations", []):
         mid = c.get("meeting_id")
         m = db.get_meeting(mid) if mid else None
+        if allowed_ids is not None and mid not in allowed_ids:
+            continue
         if not m:                      # invalid/hallucinated id -> not a usable citation
             continue
         quote = c.get("quote", "")

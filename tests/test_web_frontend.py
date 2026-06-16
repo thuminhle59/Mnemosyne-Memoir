@@ -38,8 +38,28 @@ def test_ingest_form_keeps_audio_file_upload_path_reliable():
     js = (WEB / "app.js").read_text(encoding="utf-8")
 
     assert '<form id="ingestForm">' in html
+    assert 'class="file-upload-row ingest-panel"' in html
+    assert '<span class="file-upload-button">Upload</span>' in html
+    assert '<span id="ingestFileLabel" class="file-name-line">No file selected</span>' in html
+    assert "Optional audio/video upload" not in html
+    assert "Memoir will upload this file in chunks." not in js
+    assert '`${file.name}`' in js
     assert 'if (file) form.append("file", file);' in js
     assert 'if (file && !text) form.append("file", file);' not in js
+
+
+def test_frontend_uses_chunked_upload_for_every_file_input():
+    js = (WEB / "app.js").read_text(encoding="utf-8")
+
+    assert "DIRECT_UPLOAD_BYTES" not in js
+    assert "isPayloadTooLarge" not in js
+    assert "const CHUNK_UPLOAD_CONCURRENCY = 3;" in js
+    assert "uploadNextChunk" in js
+    assert "workers = Array.from" in js
+    assert "const chunkLoaded = Array(totalChunks).fill(0);" in js
+    assert "function uploadedChunkBytes()" in js
+    assert "if (file) {" in js
+    assert "out = await chunkedIngestMeeting(file, text);" in js
 
 
 def test_tabs_use_stable_data_attributes_and_delegated_handler():
@@ -89,15 +109,19 @@ def test_tablet_layout_keeps_sidebar_from_collapsing_under_chat():
 
     assert ".workspace { flex: 1; min-height: 0; display: grid; grid-template-columns: 268px minmax(520px, 1fr) 336px;" in css
     assert ".workspace { grid-template-columns: 244px minmax(360px, 1fr); }" in css
-    assert ".terminology { flex: 0 0 auto;" in css
-    assert "styles.css?v=20260616-no-risk-detail" in html
+    assert ".terminology { flex: 0 1 min(34vh, 260px); min-height: 0; }" in css
+    assert "styles.css?v=20260616-evidence-dropdown" in html
+    assert "app.js?v=20260616-evidence-dropdown" in html
+    assert 'data-export="docx"' in html
+    assert 'data-export="pdf"' not in html
+    assert "PDF (.pdf)" not in html
 
 
 def test_terminology_section_is_compact_inside_sidebar():
     css = (WEB / "styles.css").read_text(encoding="utf-8")
 
-    assert ".knowledge { flex: 0 0 auto; max-height: min(34vh, 260px);" in css
-    assert ".glossary-panel { min-height: 0;" in css
+    assert ".knowledge { flex: 0 1 min(34vh, 260px); max-height: min(34vh, 260px);" in css
+    assert ".glossary-panel { flex: 1; min-height: 0;" in css
     assert ".inline-form" not in css
     assert ".guide-drop" not in css
     assert ".term-list { min-height: 0;" in css
@@ -117,16 +141,24 @@ def test_frontend_positions_memoir_as_decision_memory_agent():
         "Contradictions",
         "Risks &amp; Blockers",
         "Actions",
-        "Evidence Lab",
-        "Evidence Graph",
+        "Evidence",
         "Ask Memoir",
     ]:
         assert label in html
+    assert "Evidence Lab" not in html
+    assert "Evidence Graph" not in html
+    assert 'id="evidenceFilterBtn"' in html
+    assert "Filter by: All" in html
+    assert "data-evidence-filter-all" in html
+    assert 'id="evidenceTypeOptions"' in html
+    assert 'id="evidenceTypeFilter" multiple' not in html
     assert "Decision Drift" not in html
     assert "Contradiction Radar" not in html
     assert "Action Memory" not in html
     assert "<span>Contradiction</span>" in html
     assert "<span>Action</span>" in html
+    assert '<article class="radar-card signal-card green">\n                <strong id="decisionDriftCount">0</strong>' in html
+    assert '<article class="radar-card signal-card red accent">\n                <strong id="contradictionCount">0</strong>' in html
     assert 'id="tabMemory" class="tab" href="#memoryView" data-tab="memory" onclick="switchTab(\'memory\')">Actions</a>' in html
     assert "Memory Ops" not in html
     assert "Highlights" not in html
@@ -154,8 +186,8 @@ def test_frontend_positions_memoir_as_decision_memory_agent():
     assert 'detail: "Contradiction"' not in js
     assert "const highlights" not in js
     assert 'const tp = $("topics")' not in js
-    assert ".signals { display: grid; grid-template-columns: repeat(3, max-content);" in css
-    assert ".signal-card { min-height: 44px; display: flex; align-items: baseline;" in css
+    assert ".signals { width: fit-content; display: grid; grid-template-columns: repeat(3, max-content);" in css
+    assert ".signal-card { min-height: 34px; display: flex; align-items: baseline;" in css
     assert ".signal-card strong { flex: 0 0 auto;" in css
 
 
@@ -172,13 +204,20 @@ def test_meeting_summary_lives_inside_executive_brief_view():
     assert summary_pos > head_start
     assert '<div id="activeSummary" class="summary digest-summary">' in html
     assert "function renderExecutiveSummary" in js
-    assert "function executiveSummaryLines" in js
-    assert "splitSummarySentences" in js
-    assert "chosen.slice(0, 3)" in js
+    assert "function renderStructuredSummaryBrief" in js
+    assert "function fallbackSummaryLines" in js
+    assert "meeting.summary_brief" in js
+    assert "summaryBriefLines" in js
+    for label in ["Context", "Decisions", "Risk", "Next step"]:
+        assert f'"{label}"' not in js
+    assert "summary-section-title" not in js
+    assert "function executiveSummaryLines" not in js
+    assert "splitSummarySentences" not in js
+    assert "chosen.slice(0, 3)" not in js
     assert "clean.slice" not in js
     assert "trim()}..." not in js
     assert 'const label = meeting ? "Meeting summary" : "Summary";' in js
-    assert "const readable = executiveSummaryLines(meeting)" in js
+    assert "renderStructuredSummaryBrief(box, meeting.summary_brief)" in js
     assert "request(API.digest)" not in js
     assert "state.digest = digestResult.status" not in js
     assert "const digest = state.digest || {};" not in js
@@ -191,16 +230,32 @@ def test_meeting_summary_lives_inside_executive_brief_view():
     assert "TL;DR" not in js
     assert ".digest-summary" in css
     assert ".summary-label" in css
+    assert ".summary-section-title" not in css
     assert ".summary p + p" in css
     assert ".summary-groups" not in css
     assert ".summary-group" not in css
+
+
+def test_frontend_persists_owner_id_and_sends_owner_header():
+    js = (WEB / "app.js").read_text(encoding="utf-8")
+
+    assert 'const OWNER_STORAGE_KEY = "memoir_owner_id";' in js
+    assert "function getOwnerId()" in js
+    assert "window.localStorage.getItem(OWNER_STORAGE_KEY)" in js
+    assert "window.crypto.randomUUID()" in js
+    assert '"X-Memoir-Owner": getOwnerId()' in js
+    assert "const requestOptions = withOwnerHeader(options)" in js
 
 
 def test_decision_list_does_not_render_signal_brief_detail():
     js = (WEB / "app.js").read_text(encoding="utf-8")
 
     assert '"Signal brief"' not in js
-    assert "...(m.key_points || []).map((text) => ({ text }))" in js
+    assert 'const decisionRows = (m.decisions || []).map((d) => ({ text: d.text, timestamp: d.timestamp }));' in js
+    assert 'renderLine(d.text, d.timestamp)' in js
+    assert "...(m.key_points || []).map((text) => ({ text }))" not in js
+    assert 'detail: "Decision"' not in js
+    assert "factDecisions" not in js
 
 
 def test_risk_list_does_not_render_risk_detail_label():
@@ -224,6 +279,10 @@ def test_summary_and_contradictions_are_scoped_to_selected_meeting():
     assert "const currentResurfaced = activeResurfaced();" in js
     assert "currentContradictions.length + currentResurfaced.length" in js
     assert "currentContradictions.length;" in js
+    assert "function contradictionText(c)" in js
+    assert "Đã thay đổi từ" in js
+    assert "sang ${newStatement}" in js
+    assert "(meeting #${meetingDisplayIdById(citation.meeting_id)})" in js
 
 
 def test_evidence_mentions_are_scoped_to_selected_meeting():
@@ -248,9 +307,11 @@ def test_metric_cards_live_below_meeting_title_before_tabs():
     assert "<small>Decisions or facts" not in html
     assert "<small>Conflicting claims" not in html
     assert "<small>Open commitments" not in html
+    assert ".signals { width: fit-content;" in css
+    assert ".signal-card { min-height: 34px;" in css
     assert ".signal-card span { min-width: 0;" in css
-    assert "font-size: 8.5px" in css
-    assert "font-size: 22px" in css
+    assert "font-size: 8px" in css
+    assert "font-size: 20px" in css
 
 
 def test_memory_ops_filters_actions_to_selected_meeting():
@@ -294,6 +355,9 @@ def test_memory_dashboard_uses_compact_scrollable_panels():
     assert 'id="risksCard" class="brief-card scroll-card wide"' in html
     assert ".executive-nav" in css
     assert ".section-jump-btn" in css
+    assert ".executive-nav button { min-height: 32px; }" in css
+    assert ".section-jump-btn { border: 1px solid var(--line); border-radius: 8px;" in css
+    assert "font-size: 13px" in css
     assert ".action-toolbar" not in css
     assert "scrollIntoView({ behavior: \"smooth\", block: \"start\" })" in (WEB / "app.js").read_text(encoding="utf-8")
     assert "<h2>Contradictions</h2>" in html
@@ -302,7 +366,8 @@ def test_memory_dashboard_uses_compact_scrollable_panels():
     assert "Re-detect" not in html
     assert ".scroll-card ul { flex: 1; min-height: 0; overflow: auto;" in css
     assert ".scroll-card.wide { grid-column: 1 / -1; height: clamp(190px, 24vh, 250px); max-height: none; }" in css
-    assert ".transcript-view, .memory-grid article ul,\n  .action-workbench ul, .evidence-graph ul { overflow: visible; }" in css
+    assert ".memory-grid article ul,\n  .action-workbench ul { overflow: visible; }" in css
+    assert ".transcript-view, .memory-grid article ul,\n  .action-workbench ul, .evidence-graph ul { overflow: visible; }" not in css
     assert ".scroll-card ul, .memory-grid article ul" not in css
 
 
@@ -322,18 +387,43 @@ def test_actions_tab_shows_important_actions_with_completion_checkboxes():
     assert 'type="checkbox"' in js
     assert 'data-action-toggle' in js
     assert 'updateActionStatus(Number(toggle.dataset.actionId), toggle.checked ? "completed" : "pending", toggle)' in js
+    assert 'data-assign-toggle' in js
+    assert 'Assign ✉' not in js
+    assert 'class="assign-toggle icon-assign-toggle"' in js
+    assert './assets/add-user.png?v=20260616' in js
+    assert 'aria-label="Assign owner"' in js
+    assert 'data-assign-form data-action-id="${item.id}" hidden' in js
+    assert 'data-assign-owner' in js
+    assert 'class="assign-owner"' in js
+    assert 'placeholder="Người phụ trách"' in js
+    assert 'placeholder="email"' in js
+    assert '>Assign</button>' in js
+    assert '>Send</button>' in js
+    assert 'data-assign-owner-save' in js
+    assert 'assignAction(Number(assignOwnerSave.dataset.actionId), owner, "", assignOwnerSave, false)' in js
+    assert 'showToast("Nhập email để gửi assignment", "error")' in js
+    assert 'assignAction(Number(assignSend.dataset.actionId), owner, email, assignSend, true)' in js
+    assert 'const cleanOwner = owner.trim() || cleanEmail' in js
+    assert 'body: JSON.stringify({ owner: cleanOwner, email: cleanEmail || null, notify })' in js
+    assert '`Đã giao cho ${res.owner} & gửi email tới ${cleanEmail}`' in js
     assert "state.actions = await request(API.actions);\n  renderMemory();\n  showToast(\"Action status updated\");" not in js
     assert 'const openScore = statusKey(action.status) !== "completed" ? 1 : 0;' not in js
     assert 'item.owner || "Unassigned"' not in js
     assert ".action-check-row" in css
     assert ".action-check-input" in css
     assert ".action-completed" in css
+    assert ".assign-toggle { border: 1px solid var(--line); border-radius: 7px; background: #fff;" in css
+    assert ".icon-assign-toggle { width: 20px; height: 18px;" in css
+    assert ".icon-assign-toggle img { width: 12px; height: 12px;" in css
+    assert ".assign-owner { width: 130px; flex: 0 0 130px; }" in css
+    assert ".assign-email { width: 200px; flex: 0 0 200px; }" in css
+    assert ".assign-send { border: 1px solid var(--line); border-radius: 8px; background: var(--rail);" in css
     assert ".action-status-controls" not in css
     assert ".decision-state" not in css
     assert ".executive-grid, .lab-grid, .brief-grid, .memory-board { grid-template-columns: 1fr;" not in css
     assert ".lab-grid { display: grid;" in css
     assert ".transcript-view { min-height: 0; overflow: auto;" in css
-    assert ".player { height: 46px;" in css
+    assert ".player { height: 44px;" in css
 
 
 def test_important_actions_dedupe_same_password_intent():
@@ -368,18 +458,18 @@ def test_frontend_request_falls_back_when_fetch_is_unavailable():
 
     assert "function requestWithXhr" in js
     assert 'typeof window.fetch === "function"' in js
-    assert "await requestWithXhr(url, options)" in js
+    assert "await requestWithXhr(url, requestOptions)" in js
     assert "new XMLHttpRequest()" in js
 
 
 def test_frontend_request_uses_xhr_for_upload_progress_events():
     js = (WEB / "app.js").read_text(encoding="utf-8")
 
-    assert 'const needsUploadProgress = typeof options.onUploadProgress === "function";' in js
+    assert 'const needsUploadProgress = typeof requestOptions.onUploadProgress === "function";' in js
     assert 'xhr.upload.onprogress = (event) => {' in js
     assert "options.onUploadProgress(event.loaded, event.total, event)" in js
     assert 'typeof window.fetch === "function" && !needsUploadProgress' in js
-    assert "requestWithXhr(url, options)" in js
+    assert "requestWithXhr(url, requestOptions)" in js
 
 
 def test_frontend_reads_server_bootstrap_from_json_script():
@@ -426,7 +516,8 @@ def test_ingest_form_can_switch_between_upload_recording_and_transcript_modes():
     assert '<option value="transcript">Paste transcript</option>' in html
     for mode in ["upload", "recording", "transcript"]:
         assert f'data-ingest-panel="{mode}"' in html
-    assert html.count("ingest-source-box") == 3
+    assert html.count("ingest-source-box") == 2
+    assert 'class="file-upload-row ingest-panel"' in html
 
     assert "function setIngestMode(mode)" in js
     assert "[data-ingest-panel]" in js
@@ -509,11 +600,19 @@ def test_ingest_file_shows_single_percent_progress_in_warning_area():
     assert "if (file) setIngestPercent(0);" in js
     assert 'if (hasSelectedIngestFile()) setUploadProgress(0, "Upload interrupted", error.message, "error");' in js
     assert "onUploadProgress: (loaded, total) => {" in js
-    assert "setUploadProgress(10 + ratio * 70, \"Uploading\");" in js
-    assert "setUploadProgress(chunkBase, \"Uploading\");" in js
-    assert "const chunkSpan = 70 / totalChunks;" in js
-    assert "setUploadProgress(chunkBase + ratio * chunkSpan, \"Uploading\");" in js
-    assert "setIngestPercent(85);" in js
+    assert "function setFileIngestProgress(percent, variant = \"\")" in js
+    assert "setUploadProgress(0, \"Upload interrupted\", error.message, \"error\");" in js
+    assert "chunkLoaded[index] = Math.max(chunkLoaded[index], chunk.size * ratio);" in js
+    assert "setFileIngestProgress((uploadedChunkBytes() / file.size) * 70);" in js
+    assert 'setUploadProgress(0, "Uploading")' not in js
+    assert 'setUploadProgress(70, "Uploading")' not in js
+    assert 'setUploadStatus(`Đang tải lên ${file.name}' not in js
+    assert "const workers = Array.from({ length: workerCount }, () => uploadNextChunk());" in js
+    assert "ingestProgress: (id) => apiUrl(`/api/ingest/progress/${id}`)" in js
+    assert "function pollBackendIngestProgress(jobId, floor = 0)" in js
+    assert "const stopProgress = pollBackendIngestProgress(session.job_id || session.upload_id, 70);" in js
+    assert "form.append(\"job_id\", jobId);" in js
+    assert "setIngestPercent(85);" not in js
     assert "setIngestPercent(100);" in js
     assert "Math.round(percent)" in js
     assert '.ingest-progress[hidden] { display: none; }' in css
@@ -523,6 +622,17 @@ def test_ingest_file_shows_single_percent_progress_in_warning_area():
     assert ".ingest-progress-fill" in css
     assert ".upload-progress" not in css
     assert ".upload-progress-fill" not in css
+
+
+def test_ingest_file_warning_uses_fastest_ingest_copy():
+    js = (WEB / "app.js").read_text(encoding="utf-8")
+    server = (ROOT / "server.py").read_text(encoding="utf-8")
+    warning = "For fastest ingest, upload audio or paste transcript. Video may take several minutes. Please keep this window open"
+
+    assert warning in js
+    assert warning in server
+    assert "Đang bóc băng & phân tích nội dung" not in js
+    assert "Đang bóc băng & phân tích nội dung" not in server
 
 
 def test_ingest_percent_progress_marks_errors_and_resets_cleanly():
@@ -558,14 +668,22 @@ def test_middle_player_plays_stored_audio_for_active_meeting():
 
     assert 'id="playerToggleBtn"' in html
     assert 'id="meetingAudio" preload="metadata"' in html
-    assert 'id="playerLabel"' in html
+    assert 'id="playerLabel"' not in html
+    assert 'class="player-progress"' in html
+    assert 'id="playerProgressFill"' in html
+    assert 'class="player-volume"' in html
     assert "function renderMeetingPlayer()" in js
     assert "audio.src = API.audio(m.id)" in js
+    assert "updatePlayerProgress(0, 0);" in js
+    assert "function updatePlayerProgress(current, duration)" in js
     assert "function toggleMeetingPlayback()" in js
     assert "await audio.play()" in js
     assert "m.can_play_audio" in js
     assert "const canPlay = Boolean(m?.id && m.can_play_audio);" in js
+    assert "$(\"playerLabel\")" not in js
     assert ".play.playing::before" in css
+    assert ".player-progress" in css
+    assert ".player-volume" in css
 
 
 def test_evidence_lab_uses_readonly_timestamped_transcript():
@@ -575,10 +693,48 @@ def test_evidence_lab_uses_readonly_timestamped_transcript():
     assert '<textarea id="transcriptText"' not in html
     assert 'id="transcriptText" class="transcript-view"' in html
     assert 'id="transcriptSearch"' in html
+    assert '<div class="toolbar transcript-toolbar">' in html
+    assert "<h2>Transcript</h2>" in html
+    assert 'placeholder="Filter transcript"' in html
     assert "function renderTranscriptEvidence()" in js
+    assert "function transcriptMinuteMarkers" not in js
+    assert "transcript-minute-marker" not in js
     assert "collectEvidenceMentions()" in js
     assert "timestamp-button" in js
     assert "audio.currentTime = seconds" in js
+    assert ".transcript-toolbar { justify-content: space-between; align-items: center; }" in (WEB / "styles.css").read_text(encoding="utf-8")
+
+
+def test_evidence_graph_omits_fact_status_labels():
+    html = (WEB / "index.html").read_text(encoding="utf-8")
+    js = (WEB / "app.js").read_text(encoding="utf-8")
+    css = (WEB / "styles.css").read_text(encoding="utf-8")
+
+    assert '<span>${escapeHtml(f.type)}</span>' in js
+    assert "${escapeHtml(f.type)} · ${escapeHtml(f.status)}" not in js
+    assert "evidenceFilterBtn" in html
+    assert "evidenceTypeOptions" in html
+    assert "<h2>Evidences</h2>" in html
+    assert "evidenceFilterMenu" in js
+    assert "state.evidenceTypeFilter" in js
+    assert "selectedOptions" not in js
+    assert "data-evidence-filter-all" in js
+    assert "data-evidence-filter-type" in js
+    assert ".evidence-filter-row" in css
+    assert ".evidence-filter-row h2" in css
+    assert ".evidence-filter-menu" in css
+    assert ".transcript-minute-marker" not in css
+
+
+def test_evidence_and_transcript_cards_have_internal_scroll_panes():
+    css = (WEB / "styles.css").read_text(encoding="utf-8")
+
+    assert ".lab-grid { display: grid;" in css
+    assert "height: clamp(460px, 64vh, 700px)" in css
+    assert ".evidence-graph, .transcript-panel { min-height: 0; height: 100%; overflow: hidden;" in css
+    assert ".evidence-graph ul { flex: 1 1 auto; min-height: 0; overflow: auto; }" in css
+    assert ".transcript-view { min-height: 0; overflow: auto; flex: 1;" in css
+    assert ".evidence-graph, .transcript-panel { height: min(56vh, 520px); }" in css
 
 
 def test_frontend_does_not_hardcode_200mb_upload_limit():
@@ -611,6 +767,8 @@ def test_sidebar_matches_claude_library_pattern_with_edit_and_delete():
     assert "API.updateMeeting" in js
     assert ".meeting-delete" in css
     assert ".active-title-input" in css
+    assert ".library { min-height: 0; display: flex; flex-direction: column; background: var(--rail);" in css
+    assert ".meeting-list { min-height: 0; flex: 1; overflow: auto; padding: 0 12px; background: var(--rail); }" in css
 
 
 def test_active_meeting_title_wraps_long_names_in_header():
@@ -631,13 +789,18 @@ def test_active_meeting_title_wraps_long_names_in_header():
 
 
 def test_main_app_sidebar_can_use_grouped_meeting_folder_layout():
+    html = (WEB / "index.html").read_text(encoding="utf-8")
     js = (WEB / "app.js").read_text(encoding="utf-8")
     css = (WEB / "styles.css").read_text(encoding="utf-8")
 
+    assert '<p class="sidebar-dnd-note">Drag and drop meeting into group</p>' in html
+    assert html.index('class="time-filter"') < html.index('class="sidebar-dnd-note"') < html.index('id="meetingList"')
     assert "function deriveMeetingGroup" in js
     assert "function groupMeetingsForSidebar" in js
     assert 'class="group-folder"' in js
     assert 'class="group-title"' in js
+    assert "group-dnd-note" not in js
+    assert "<small>${groupMeetings.length}</small>" not in js
     assert "? \"v\" : \">\"" not in js
     assert 'class="meeting-card group-meeting' in js
     assert 'class="meeting-compact-title"' in js
@@ -650,11 +813,39 @@ def test_main_app_sidebar_can_use_grouped_meeting_folder_layout():
 
     assert ".group-folder" in css
     assert ".group-title" in css
+    assert ".sidebar-dnd-note" in css
+    assert ".sidebar-dnd-note { margin: -7px 12px 4px;" in css
+    assert ".group-dnd-note" not in css
+    assert ".group-title small" not in css
     assert ".group-title span" not in css
     assert "white-space: normal" in css
     assert "overflow-wrap: anywhere" in css
     assert ".group-meeting" in css
     assert ".meeting-compact-meta" in css
+
+
+def test_sidebar_groups_can_be_renamed_and_receive_dragged_meetings():
+    js = (WEB / "app.js").read_text(encoding="utf-8")
+    css = (WEB / "styles.css").read_text(encoding="utf-8")
+
+    assert "meeting.group_title || deriveMeetingGroup(meeting)" in js
+    assert 'data-group-title="${escapeHtml(group)}"' in js
+    assert 'draggable="true"' in js
+    assert 'data-group-name="${escapeHtml(group)}"' in js
+    assert '<textarea class="group-title-input" rows="1" readonly data-group-title-input="${escapeHtml(group)}"' in js
+    assert "function resizeGroupTitleInput(input)" in js
+    assert "resizeGroupTitleInputs();" in js
+    assert "function updateMeetingGroup(id, groupTitle)" in js
+    assert "body: JSON.stringify({ group_title: clean })" in js
+    assert "function renameMeetingGroup(oldGroupTitle, newGroupTitle)" in js
+    assert "API.renameGroup" in js
+    assert "dragstart" in js
+    assert "dragover" in js
+    assert "drop" in js
+    assert "dblclick" in js
+    assert ".group-folder.drag-over" in css
+    assert ".group-title-input" in css
+    assert ".group-title-input { display: block; width: 100%; min-width: 0; min-height: 0;" in css
 
 
 def test_sidebar_meeting_names_wrap_and_rename_only_after_double_click():
@@ -674,14 +865,20 @@ def test_sidebar_meeting_names_wrap_and_rename_only_after_double_click():
     assert "meetingTitleClickTimer = window.setTimeout(() => selectMeeting(id), 220);" in js
     assert "const readonlyTitle = event.target.closest(\"[data-meeting-title][readonly]\");" in js
     assert "scheduleMeetingTitleSelection(Number(el.dataset.meetingId));" in js
-    assert "function shouldIgnoreMeetingCardClick" in js
-    assert "target.closest(\"[data-meeting-title]:not([readonly])\")" in js
-    assert 'target.closest("button, input")' in js
-    assert 'event.target.closest("input, textarea, button")' not in js
     assert ".meeting-title-input { width: 100%;" in css
     assert "white-space: normal" in css
     assert "overflow-wrap: anywhere" in css
     assert ".meeting-title-input[readonly]" in css
+
+
+def test_frontend_uses_owner_scoped_display_id_for_visible_meeting_numbers():
+    js = (WEB / "app.js").read_text(encoding="utf-8")
+
+    assert "function meetingDisplayId(meeting)" in js
+    assert '<span class="meeting-num">#${meetingDisplayId(m)}</span>' in js
+    assert '`${formatDateTimeSeconds(m.date)} · ${fmtDuration(m.duration_sec)} · #${meetingDisplayId(m)}`' in js
+    assert "showToast(`Ingested meeting #${out.display_id || out.meeting_id}`);" in js
+    assert "return citation?.meeting_id ? `(meeting #${meetingDisplayIdById(citation.meeting_id)})` : \"\";" in js
 
 
 def test_clicking_readonly_meeting_title_selects_that_meeting():
@@ -724,8 +921,12 @@ def test_terminology_panel_lists_auto_learns_and_allows_inline_editing():
 
     assert 'id="editTermsBtn"' in html
     assert 'id="saveTermsBtn"' in html
+    assert 'id="applyTermsBtn"' in html
+    assert 'aria-label="Refresh selected meeting with saved terminology" hidden>Refresh</button>' in html
     assert 'id="cancelTermsBtn"' in html
     assert 'id="termEditorPanel"' in html
+    assert 'id="termFilterInput"' in html
+    assert '<div class="term-toolbar" aria-label="Terminology editor">\n                  <input id="termFilterInput"' in html
     assert 'id="termEditList"' in html
     assert 'id="termAddRow"' in html
     assert 'id="addTermBtn"' in html
@@ -739,9 +940,19 @@ def test_terminology_panel_lists_auto_learns_and_allows_inline_editing():
     assert "autoLearnSuggestedTerms" in js
     assert "beginGlossaryEdit" in js
     assert "saveGlossaryEdit" in js
+    assert "saveGlossaryAndApplySelected" in js
+    assert "applyGlossary: (id) => apiUrl(`/api/meetings/${id}/apply_glossary`)" in js
+    assert 'await saveGlossaryEdit({ exitEditing: false });' in js
+    assert 'showToast("Terminology saved");' in js
+    assert 'alert(`Could not refresh meeting: ${error.message}`);' in js
+    assert '$("applyTermsBtn").hidden = !state.glossaryEditing' in js
+    assert 'wrong: changed ? String(original.term || "").trim() : (draft.wrong || null)' in js
     assert '$("termEditorPanel").hidden = false' in js
     assert '$("termEditList").hidden = !state.glossaryEditing' in js
     assert '$("glossaryList").hidden = state.glossaryEditing' in js
+    assert "glossaryFilter" in js
+    assert "function glossaryMatchesFilter" in js
+    assert '$("termFilterInput").addEventListener("input"' in js
     assert "data-delete-term" in js
     assert "glossaryMentionCount" in js
     assert "Number(b.count || 0) - Number(a.count || 0)" in js
@@ -751,9 +962,15 @@ def test_terminology_panel_lists_auto_learns_and_allows_inline_editing():
     assert "glossaryForm" not in js
     assert "guideForm" not in js
     assert ".term-toolbar" in css
+    assert ".terminology { flex: 0 1 min(34vh, 260px); min-height: 0; }" in css
+    assert ".knowledge { flex: 0 1 min(34vh, 260px); max-height: min(34vh, 260px);" in css
+    assert ".term-filter-input" in css
     assert ".term-editor-panel" in css
     assert ".term-edit-list" in css
     assert ".term-editor-btn" in css
+    assert ".term-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto auto;" in css
+    assert ".term-add { display: grid; grid-template-columns: minmax(0, 1fr) 44px;" in css
+    assert ".term-add .term-editor-btn { width: 44px; min-height: 32px; padding: 0; }" in css
     assert "background: #f3f3f3" in css
     assert ".suggested-terms" not in css
     assert ".suggested-term" not in css
@@ -767,6 +984,7 @@ def test_sidebar_signature_replaces_fastapi_connection_copy():
     assert '<div class="memoir-signature"><em>Remembered by Memoir</em></div>' in html
     assert ".memoir-signature" in css
     assert "font-style: italic" in css
+    assert "text-align: center" in css
 
 
 def test_left_sidebar_is_collapsible_and_meeting_cards_hide_transcript_content():
@@ -856,7 +1074,7 @@ def test_right_qa_panel_uses_claude_design_structure_with_memoir_colors():
     assert '<img class="qa-agent-logo" src="./assets/mnemosyne-logo.png?v=20260616-logo" alt="" aria-hidden="true">' in html
     assert '<strong class="qa-title-main">Ask Memoir</strong>' in html
     assert "Evidence Q&amp;A" not in html
-    assert '<strong id="chatScope" class="qa-scope-line">Ask across memory, not one transcript</strong>' in html
+    assert '<strong id="chatScope" class="qa-scope-line">Answer across memory, not just one transcript</strong>' in html
     assert '<section class="qa-scope-card">' not in html
     assert '<div id="suggestions" class="suggestions quick-prompts"></div>' in html
     assert 'class="chat-form askbar qa-composer"' in html
@@ -872,6 +1090,7 @@ def test_right_qa_panel_uses_claude_design_structure_with_memoir_colors():
     assert '<div class="citations">' not in js
     assert "Họp #${escapeHtml(c.meeting_id || \"?\")}" not in js
     assert "Mình đã đọc xong transcript cuộc họp này. Hỏi bất cứ điều gì" in js
+    assert "body: JSON.stringify({ question, meeting_id: state.activeId })" in js
     assert "msg-row" in js
     assert "agent-avatar" in js
     assert "mnemosyne-logo.png?v=20260616-logo" in js
@@ -888,7 +1107,8 @@ def test_right_qa_panel_uses_claude_design_structure_with_memoir_colors():
     assert "font-size: 18px" in css
     assert ".qa-scope-line" in css
     assert "color: var(--muted)" in css
-    assert ".qa-scope-line { display: block; margin-top: 6px; color: var(--muted); font-family: \"JetBrains Mono\", monospace; font-size: 9px; line-height: 1.3; font-weight: 500; white-space: nowrap; letter-spacing: 0; }" in css
+    assert ".qa-title-row > div { display: grid; gap: 3px; }" in css
+    assert ".qa-scope-line { display: block; margin-top: 0; color: var(--muted); font-family: \"JetBrains Mono\", monospace; font-size: 9px; line-height: 1.2; font-weight: 500; white-space: nowrap; letter-spacing: 0; word-spacing: 0; }" in css
     assert ".qa-head { padding:" in css
     assert "border-bottom: 1px solid var(--line)" in css
     assert ".qa-scope-card" not in css

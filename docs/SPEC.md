@@ -1,145 +1,315 @@
-# Mnemosyne — ZaloPay Meeting Brain
+# Memoir Product and Technical Spec
 
-> Design locked in session *"ZaloPay Meeting Brain AI Agent"* (2026-06-14).
-> Built for GreenNode Claw-a-thon 2026. Deadline: **17/06/2026 12:00 (VN)**.
+Memoir is the current product name for the Mnemosyne meeting-memory agent. It turns meeting transcripts, audio, or video into a persistent decision memory that can be searched, compared, corrected, and queried across related meetings.
 
-## 1. Positioning
+## 1. Product Goal
 
-**Mnemosyne = Meeting Ghost + a queryable organizational-memory layer.**
+Memoir should answer one question well:
 
-Meeting Ghost was *stateless*: audio in → one report out, nothing kept. Mnemosyne
-keeps every meeting in a store and reasons **across** meetings — recall, multi-source
-Q&A, proactive contradiction detection, action follow-up, executive digest.
+> What did this team decide, what changed, who owns the next work, and what evidence supports it?
 
-Reuse the verified Meeting Ghost ingestion pipeline; add a memory + reasoning + chat
-layer on top. Convention kept: Pydantic schema, decoupled modules tested in isolation,
-extraction model + reasoning model (all env vars), deploy as Custom Agent on GreenNode
-AgentBase.
+The first screen is the working product, not a landing page. Users ingest files, browse grouped meetings, inspect extracted memory, edit terminology, refresh analysis, assign actions, and ask questions against the current group/topic.
 
-### Data strategy — option C (agreed)
-DB + load-into-context **now**, wrapped behind a `retrieve(query)` interface so it can be
-upgraded to full RAG (embeddings + vector search) **after** the hackathon **without
-changing call sites**. No vector DB in v1 — MiniMax/Gemini long context holds dozens of
-meetings fine.
+## 2. Current UX Contract
 
-## 2. Compliance (Claw-a-thon rulebook) ⚠️
+### Left Sidebar
 
-A meeting agent is high-risk for the data rule. Mandatory:
-- Demo only with **synthetic / staged / public / personal** meeting data. Never real
-  internal/customer meetings or PII. (`tests/fixtures/sample_transcript_vi.txt` is a
-  compliant demo asset.)
-- Email reports go to the **builder's own** address (simulate Outlook with Gmail if needed).
-- State the synthetic-data scope explicitly in the Use Case Description.
+- Shows owner-scoped meeting library.
+- Meetings are grouped by `group_title`.
+- Old meetings without `group_title` fall back to derived grouping from meeting title.
+- Group count badges are hidden.
+- Group titles wrap and can be renamed inline by double-clicking.
+- Meeting cards can be dragged into another group; drop saves the new `group_title`.
+- Meeting title rename remains separate from group rename.
+- Renaming a meeting title must not regroup a meeting once it has an explicit `group_title`.
+- A small note under time filters says `Drag and drop meeting into group`.
+- Terminology is editable, filterable, and positioned above the footer so it does not overlap `Remembered by Memoir`.
 
-## 3. Module map
+### Main Workspace
 
-| Module | Origin | Role |
-|---|---|---|
-| `recorder/record.py` | ♻️ reuse | Capture Teams audio / accept a file → ingest |
-| `transcribe.py` | ♻️ reuse | Audio → text (no timestamps, per decision) |
-| `analyze.py` + `models.py` | ♻️ reuse (extended) | Transcript → `MeetingReport` JSON |
-| `report.py`, `mailer.py`, `llm.py`, `config.py` | ♻️ reuse | docx/pdf, email, LLM client, config |
-| **`db.py`** | 🆕 (pattern from `zalopay-promo-agent`) | SQLAlchemy/SQLite: 5 tables |
-| **`retrieve.py`** | 🆕 | `retrieve(query)` full-history, timeline-sorted (RAG-v2 seam) |
-| **`brain.py`** | 🆕 | 5 reasoning flows |
-| **`viewer/app.py`** | ♻️ extended | Streamlit: Meetings / Chat / Actions / Digest |
-| **`main.py`** | ♻️ extended | AgentBase entrypoint, route by `action` |
-| **`bot/`** | 🆕 (nice-to-have) | OpenClaw Zalo/Telegram → `brain.py` |
+Tabs:
 
-### Data flow
+| Tab | Purpose |
+|---|---|
+| `Summary` | Important selected-meeting summary, decisions, contradictions, risks/blockers, and audio playback. |
+| `Actions` | Action completion, owner assignment, optional email send. |
+| `Evidence` | Evidence list and transcript panel. |
+
+Summary constraints:
+
+- Do not show literal labels such as `context`, `decisions`, `risk`, or `next step` in the summary text.
+- Keep risk and next-step summary to the single most important sentence each.
+- Decisions can include important facts or decision-like summary items when they are concrete.
+- Decision rows show timestamps where available and do not need original quotes.
+- Contradictions should be phrased as a natural conflict explanation and cite meeting numbers in parentheses, instead of mechanically saying `Trước -> Nay`.
+
+Evidence constraints:
+
+- The tab label is `Evidence`.
+- The section title is `Evidences`.
+- Evidence list can be filtered by type with dropdown checkboxes.
+- Transcript has its own title, filter at the top right, and internal scroll.
+- Transcript line timestamp chips are hidden in the main transcript body.
+- Evidence and transcript cards use fixed height with internal scrolling.
+
+Audio playback constraints:
+
+- Do not show meeting title in the audio player.
+- Use compact minimized-player styling.
+- Audio seeks to approximate timestamps where evidence/action timestamps are available.
+
+### Right Q&A Panel
+
+- Header is `Ask Memoir`.
+- Scope line is `Answer across memory, not just one transcript` and remains on one line.
+- Input placeholder is `Ask Memoir anything`.
+- Enter submits, Shift+Enter inserts a newline.
+- Suggestions use Vietnamese phrasing without unnecessary English jargon.
+- Q&A answers must not show a separate citation section in the UI.
+- Q&A is scoped to meetings in the same group/topic as the selected meeting.
+
+### Ingest Drawer
+
+- File upload shows only one selected filename next to the Upload button.
+- Ingest shows one warning line:
+  `For fastest ingest, upload audio or paste transcript. Video may take several minutes. Please keep this window open`
+- Progress percent and bar update continuously from upload through ingest completion.
+- All file inputs use chunked upload.
+- `Remembered by Memoir` is centered in its row.
+
+## 3. Data Ownership and Local Isolation
+
+The app uses lightweight owner scoping for local/demo use:
+
+- Frontend creates `memoir_owner_id` in `localStorage`.
+- Every API request includes `X-Memoir-Owner`.
+- Backend filters meetings and glossary by `owner_id`.
+- New meetings and glossary rows are stored with the current owner id.
+- Incognito starts with a different owner id and therefore an empty library.
+
+This is not authentication. It is a local/demo isolation layer so user A and user B do not see each other's local data in the same shared app runtime.
+
+## 4. Data Model
+
+### Pydantic Contracts
+
+| Type | Purpose |
+|---|---|
+| `MeetingReport` | Full extracted report, summary brief, decisions, actions, risks, transcript. |
+| `SummaryBrief` | Compact summary fields normalized to short important sentences. |
+| `Decision` | Concrete decision/fact-like decision with optional timestamp and quote. |
+| `ActionItem` | Task, owner, deadline, priority, status, timestamp, quote. |
+| `KnowledgeFact` | Atomic evidence unit for reasoning. |
+| `Contradiction` | Conflict between two fact rows. |
+| `Citation` | Meeting/date/quote/timestamp provenance for backend answers. |
+| `Answer` | Q&A result. |
+
+### SQL Tables
+
+| Table | Purpose |
+|---|---|
+| `meetings` | One row per meeting; includes title, date, transcript, report JSON, source file, `group_title`, `owner_id`, hashes, audio timing metadata. |
+| `action_items` | Denormalized actions from reports, with owner/status/deadline. |
+| `action_links` | Follow-up links from older action to later meeting. |
+| `knowledge_facts` | Atomic facts/evidence extracted from meetings. |
+| `contradictions` | Fact-pair conflicts detected during ingest/rebuild. |
+| `resurfaced` | Old rejected/forgotten decisions raised again. |
+| `glossary` | Owner-scoped canonical terms and optional wrong-term mappings. |
+
+Migration rule:
+
+- `db.init_db()` must keep light migrations for new columns so older local SQLite files still boot.
+- `group_title` and `owner_id` must be nullable to preserve old demo data.
+
+## 5. Ingest Pipeline
+
+```text
+file/text input
+  -> chunked upload (files only)
+  -> assemble upload
+  -> media conversion/chunking when needed
+  -> STT
+  -> deterministic + LLM terminology correction
+  -> analyze transcript into MeetingReport
+  -> extract KnowledgeFact rows
+  -> save meeting/actions/facts
+  -> detect contradictions
+  -> scan resurfaced decisions
+  -> store playback audio when available
 ```
-INGEST: audio/file → transcribe → analyze (MeetingReport) → extract_facts (KnowledgeFact[])
-        → db.save_meeting + save_facts + save_actions
-        → detect_contradictions(new_facts)            # proactive, at ingest time
-        → (optional) report docx/pdf as before
 
-QUERY:  question → retrieve(query) → relevant meetings+facts (full history, timeline)
-        → brain.* → answer
-        (Streamlit Chat / OpenClaw bot / /invocations all call the same brain.py)
+Important rules:
+
+- Preserve proper nouns and English product/team names when they are already reasonable.
+- Glossary refresh applies current terminology to transcript/title and reanalyzes derived memory.
+- Same-file upload can be detected by audio hash.
+- Upload progress is backend-visible through `/api/ingest/progress/{job_id}`.
+- Media staging lives in `MNEMOSYNE_UPLOAD_STAGING_DIR`.
+
+## 6. Reasoning Rules
+
+### Decisions
+
+- Extract only concrete decisions or concrete fact-like statements useful for decision memory.
+- Include important summary-like facts if they represent a clear operational commitment, timeline, scope, owner, threshold, or go/no-go statement.
+- Prefer exact English terms and proper nouns over Vietnamese phonetic substitutions.
+- Add a timestamp when the transcript/audio evidence can support one.
+- Do not require quote display in the UI.
+
+### Contradictions
+
+- A contradiction is a real conflict between two concrete claims.
+- Avoid false positives for vague risks, preferences, or unrelated statements.
+- Phrase output as a concise explanation of what conflicts and why it matters.
+- Cite meeting numbers inline, for example `(meeting #1)` and `(meeting #2)`.
+- Use severity only when it helps sorting; do not let labels dominate the UI.
+
+### Summary
+
+- Keep only the most important content for executive scanning.
+- Do not render internal bucket names to users.
+- Risk: one sentence.
+- Next step: one sentence.
+- Decisions: at most the top concrete decisions/facts for the selected meeting.
+
+### Q&A
+
+- Scope to the selected meeting group/topic.
+- Use retrieved facts, summaries, decisions, actions, contradictions, and transcript snippets from the allowed meetings only.
+- If evidence is absent, say it was not mentioned in the scoped meetings.
+- UI answer text must not append a separate citation list.
+
+## 7. API Contract
+
+Owner-scoped routes use `X-Memoir-Owner`.
+
+| Method | Route | Owner-scoped | Purpose |
+|---|---|---:|---|
+| `GET` | `/api/health` | No | Local API health. |
+| `GET` | `/api/config` | No | Upload limits and chunk size. |
+| `GET` | `/api/stats` | Yes | Counts for current owner. |
+| `GET` | `/api/meetings` | Yes | Meeting list. |
+| `GET` | `/api/meetings/{id}` | Yes | Meeting detail. |
+| `PATCH` | `/api/meetings/{id}` | Yes | Update title/source/group. |
+| `PATCH` | `/api/meeting_groups` | Yes | Rename all meetings in a group. |
+| `DELETE` | `/api/meetings/{id}` | Yes | Delete meeting and derived records. |
+| `GET` | `/api/meetings/{id}/audio` | Yes | Audio playback. |
+| `GET` | `/api/meetings/{id}/report.docx` | Yes | DOCX export. |
+| `POST` | `/api/meetings/{id}/reanalyze` | Yes | Reanalyze supplied transcript. |
+| `POST` | `/api/meetings/{id}/apply_glossary` | Yes | Apply terminology and reanalyze. |
+| `POST` | `/api/uploads` | No | Create upload session. |
+| `POST` | `/api/uploads/{id}/chunks` | No | Upload chunk. |
+| `POST` | `/api/uploads/{id}/complete` | Yes | Assemble and ingest. |
+| `GET` | `/api/ingest/progress/{job_id}` | No | Upload/ingest progress. |
+| `POST` | `/api/ingest` | Yes | Direct ingest fallback. |
+| `POST` | `/api/ingest/check` | Yes | Same-file check. |
+| `GET` | `/api/actions` | Yes | Action list. |
+| `PATCH` | `/api/actions/{id}` | Yes | Action status. |
+| `POST` | `/api/actions/{id}/assign` | Yes | Save owner/email and optionally notify. |
+| `GET` | `/api/contradictions` | Yes | Contradiction list. |
+| `GET` | `/api/resurfaced` | Yes | Resurfaced items. |
+| `POST` | `/api/ask` | Yes | Group-scoped Q&A. |
+| `GET` | `/api/glossary` | Yes | Terminology list. |
+| `POST` | `/api/glossary` | Yes | Add term. |
+| `DELETE` | `/api/glossary/{id}` | Yes | Delete term. |
+| `GET` | `/api/glossary/suggestions` | Yes | Suggest terms for selected meeting. |
+| `POST` | `/api/glossary/learn` | Yes | Learn terms from uploaded text. |
+| `POST` | `/api/followup` | No | Maintenance scan. |
+| `POST` | `/api/scan_forgotten` | No | Maintenance scan. |
+| `POST` | `/api/redetect_contradictions` | No | Maintenance rebuild. |
+| `POST` | `/api/notify/actions` | No | Action digest email. |
+
+AgentBase:
+
+- `GET /health` is handled by `main.py`.
+- `POST /invocations` routes actions through `main.process`.
+- `main.py` mounts `server.app` at `/` so the deployed runtime serves the same browser UI.
+
+## 8. Configuration
+
+Core defaults live in `config.py` and `.env.example`.
+
+Required for real ingestion:
+
+- `LLM_API_KEY`
+- `LLM_BASE_URL`
+- `STT_URL`
+
+Safe local defaults:
+
+- `DATABASE_URL=sqlite:///mnemosyne.db`
+- `SUMMARY_MODEL=minimax/minimax-m2.5`
+- `REASONING_MODEL=google/gemma-4-31b-it`
+- `MNEMOSYNE_MAX_UPLOAD_BYTES=524288000`
+- `MNEMOSYNE_UPLOAD_CHUNK_BYTES=16777216`
+
+Optional email:
+
+- `EMAIL_ENABLED=true`
+- `SMTP_HOST`
+- `SMTP_PORT`
+- `SMTP_SSL`
+- `SMTP_USER`
+- `SMTP_PASS`
+- `EMAIL_FROM`
+- `EMAIL_TO`
+
+## 9. Testing Requirements
+
+Before GitHub push:
+
+```bash
+PYTHONPATH=. python -m pytest -q
 ```
 
-## 4. Data model
+Coverage expectations:
 
-### Pydantic (`models.py`)
-Keep `Decision`, `MeetingReport`. Extend `ActionItem`; add `KnowledgeFact`, `Contradiction`.
-```python
-class ActionItem(BaseModel):
-    task: str
-    owner: str | None = None
-    deadline: str | None = None
-    priority: Literal["cao","trung bình","thấp"] = "trung bình"
-    quote: str | None = None
-    status: Literal["mở","đang làm","xong","quá hạn","treo"] = "mở"   # follow-up
-    source_meeting_id: int | None = None                              # provenance
+- DB migration and owner/group filtering.
+- Meeting display ids per owner.
+- Chunked upload API and progress.
+- Meeting grouping and group rename frontend contract.
+- Terminology save/refresh endpoints.
+- Proper-noun correction guardrails.
+- Q&A scoping by selected group/topic.
+- Action owner assignment/email behavior.
+- Evidence/transcript internal scroll UI contracts.
 
-class KnowledgeFact(BaseModel):
-    type: Literal["quyết định","fact","cam kết","số liệu","giả định","rủi ro"]
-    subject: str            # e.g. "ngân sách Q3", "ngày launch"
-    statement: str          # normalized claim
-    quote: str | None = None
-    status: Literal["hiệu lực","đã thay thế","mâu thuẫn"] = "hiệu lực"
+## 10. GitHub Readiness
 
-class Contradiction(BaseModel):
-    subject: str
-    explanation: str
-    severity: Literal["cao","trung bình","thấp"] = "trung bình"
+Repository must be usable after:
+
+```bash
+git clone <repo>
+cd Mnemosyne
+python3.12 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+uvicorn server:app --host 127.0.0.1 --port 18093
 ```
 
-### DB tables (SQLAlchemy/SQLite — `db.py`)
-| Table | Key columns | Notes |
-|---|---|---|
-| `meetings` | id, title, date, duration_min, summary, report_json, transcript, created_at, content_hash | 1 row/meeting; `content_hash` dedups re-ingest |
-| `action_items` | id, meeting_id (FK), task, owner, deadline, priority, status, quote | denormalized from report_json at save time |
-| `action_links` | id, action_id, related_meeting_id, note | trace where an old action was re-mentioned (follow-up) |
-| `knowledge_facts` | id, meeting_id, type, subject, statement, quote, status, created_at | accumulating memory; unit of reasoning |
-| `contradictions` | id, fact_a_id, fact_b_id, subject, explanation, severity, detected_at | conflicting fact pairs (detected at ingest) |
+Do not push:
 
-## 5. Brain flows (`brain.py`)
-Pure functions: data from `db`/`retrieve` → `llm` → Pydantic. Tested with mock LLM.
+- `.env`, `.env.*`
+- `.greennode.json`
+- `.agentbase/`
+- `.gh-config/`
+- `mnemosyne.db`
+- private recordings/transcripts/reports
+- generated media/report artifacts except intentional demo assets
 
-1. **`ingest(audio|text, date, title) -> Meeting`** — transcribe → analyze → `extract_facts`
-   → save → `detect_contradictions`.
-2. **`ask(question) -> Answer{text, citations[]}`** — Historical Recall Q&A. `retrieve` full
-   history, timeline-sorted → LLM answers with **mandatory citations** (meeting title/date +
-   quote); progressive topics presented as a timeline; "not mentioned" if absent.
-3. **`detect_contradictions(new_facts) -> Contradiction[]`** — for each new fact, compare with
-   active facts of the same `subject`; on conflict write `contradictions`, mark old fact
-   `đã thay thế`/`mâu thuẫn`, surface a proactive warning. (e.g. launch 30/6 vs 15/7).
-4. **`digest(scope) -> DigestReport`** — scope = all / project / date-range. Summaries + open
-   actions + contradictions → executive digest; exportable docx/pdf via `report.py`.
-5. **`follow_up() -> ActionStatus[]`** — match action items across meetings (owner + similar
-   task); on a new meeting, LLM judges mentioned/done/overdue → update status + `action_links`.
+Push:
 
-## 6. Models per tier (env-configurable; locked after plan)
-| Tier | Primary | Fallback |
-|---|---|---|
-| STT | `openai/whisper-large-v3` | — |
-| Extraction (report + facts) | `minimax/minimax-m2.5` (safe, verified) | `google/gemma-4-31b-it` |
-| Reasoning (Q&A/contradiction/digest) | `gemini/gemini-2.5-pro` | `deepseek/deepseek-v4-pro` |
-| Embeddings (RAG v2 only) | `baai/bge-m3` | `qwen/qwen3-embedding-8b` |
-| Reranker (RAG v2 only) | `qwen/qwen3-reranker-8b` | — |
+- Source files.
+- Tests.
+- `web/assets/add-user.png`.
+- `.env.example`.
+- README and this spec.
 
-Avoid `*-thinking` / `deepseek-r1-*` for JSON tasks (known `content=None` trap).
-Upgrade path: try `gemini/gemini-2.5-flash` for extraction after a Vietnamese-JSON smoke test.
+## 11. Known Limitations
 
-## 7. Deploy & test
-- **Deploy:** Custom Agent on GreenNode AgentBase (pattern `user-quality-evaluator`).
-  `main.py` runs `greennode_agentbase`, EXPOSE 8080. SQLite in-container for demo;
-  `DATABASE_URL` env to migrate to Postgres. Endpoint must be switched to **public**.
-- **Streamlit** is the primary demo face; OpenClaw bot is nice-to-have.
-- **Tests (TDD, mock LLM):** db save/dedup/denormalize/query-by-subject; retrieve full-history
-  + timeline + limit; each brain flow with fixed JSON; contradiction with 2 opposing facts;
-  follow_up status update. E2E: ingest 2 linked Vietnamese meetings + 1 contradiction → recall
-  query → check citations + contradiction warning.
-
-## 8. Build order (priority for deadline)
-1. `db.py` + extended `models.py`
-2. `retrieve.py` + `brain.ingest`/`extract_facts`
-3. `brain.ask` (core demo feature)
-4. `brain.detect_contradictions` (wow factor)
-5. `viewer` Chat + Meetings + Actions
-6. `brain.digest` + `brain.follow_up`
-7. Deploy AgentBase
-8. (if time) OpenClaw bot
-
-> If time runs short, cut from #8 upward. Minimum acceptable MVP = #1–#5.
+- Owner scoping is local/demo isolation, not authentication.
+- SQLite is fine for local/demo. Use a managed database through `DATABASE_URL` for persistent multi-user production.
+- PDF rendering depends on native WeasyPrint libraries. DOCX export is the safer default.
+- Video ingest is slower than audio/transcript because it must convert media before STT.
+- AgentBase runtime storage may not be durable across redeploys unless `DATABASE_URL` points to external storage.
