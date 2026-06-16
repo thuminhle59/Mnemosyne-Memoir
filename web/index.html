@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="./styles.css?v=20260616-ingest-progress-live">
+    <link rel="stylesheet" href="./styles.css?v=20260616-no-risk-detail">
   </head>
   <body>
     <div id="app" class="app-shell">
@@ -83,15 +83,15 @@
             <div class="signals memory-hero">
               <article class="radar-card signal-card red accent">
                 <strong id="decisionDriftCount">0</strong>
-                <span>Decision Drift</span>
+                <span>Decision</span>
               </article>
               <article class="radar-card signal-card green">
                 <strong id="contradictionCount">0</strong>
-                <span>Contradiction Radar</span>
+                <span>Contradiction</span>
               </article>
               <article class="radar-card signal-card gold">
                 <strong id="openActionCount">0</strong>
-                <span>Action Memory</span>
+                <span>Action</span>
               </article>
             </div>
             <div class="tabs" role="tablist">
@@ -178,7 +178,7 @@
           <div id="chatMessages" class="chat-messages messages scroll"></div>
           <div id="suggestions" class="suggestions quick-prompts"></div>
           <form id="chatForm" class="chat-form askbar qa-composer">
-            <textarea id="chatInput" rows="1" placeholder="Ask which decision changed, who owns it, and what evidence supports it..."></textarea>
+            <textarea id="chatInput" rows="1" placeholder="Ask Memoir anything"></textarea>
             <button class="primary-btn icon-btn" type="submit" aria-label="Ask Memoir"><span aria-hidden="true">↗</span></button>
           </form>
         </aside>
@@ -261,6 +261,6 @@
         window.dispatchEvent(new HashChangeEvent("hashchange"));
       }
     </script>
-    <script src="./app.js?v=20260616-ingest-progress-live" defer></script>
+    <script src="./app.js?v=20260616-no-risk-detail" defer></script>
   </body>
 </html>

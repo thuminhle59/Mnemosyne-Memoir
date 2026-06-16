@@ -222,6 +222,22 @@ def _fact_tokens(fact) -> set[str]:
     return retrieve_mod._tokens(f"{getattr(fact, 'subject', '')} {getattr(fact, 'statement', '')}")
 
 
+def _plain_text(value: str) -> str:
+    return retrieve_mod._strip_diacritics(value or "").lower()
+
+
+def _same_meeting_source(a, b) -> bool:
+    if not a or not b or a.id == b.id:
+        return False
+    if a.audio_hash and b.audio_hash and a.audio_hash == b.audio_hash:
+        return True
+    if a.content_hash and b.content_hash and a.content_hash == b.content_hash:
+        return True
+    if a.source_file and b.source_file and a.source_file == b.source_file and (a.date or "") == (b.date or ""):
+        return True
+    return False
+
+
 def _same_contradiction_target(old, new: KnowledgeFact) -> bool:
     """Cheap guard before the LLM: dates for selecting pilot merchants and dates for
     running the pilot are different milestones, even if their subjects share words."""
@@ -230,6 +246,15 @@ def _same_contradiction_target(old, new: KnowledgeFact) -> bool:
     old_selection = bool(old_tokens & _PILOT_SELECTION_TOKENS)
     new_selection = bool(new_tokens & _PILOT_SELECTION_TOKENS)
     if "pilot" in old_tokens and "pilot" in new_tokens and old_selection != new_selection:
+        return False
+    return True
+
+
+def _verdict_is_actual_conflict(verdict: dict) -> bool:
+    explanation = _plain_text(str(verdict.get("explanation", "")))
+    if "khong mau thuan" in explanation or "khong phai mau thuan" in explanation:
+        return False
+    if "nhat quan" in explanation:
         return False
     return True
 
@@ -287,6 +312,7 @@ def detect_contradictions(new_facts: list[KnowledgeFact]) -> list[Contradiction]
             if f.meeting_id != nf.source_meeting_id
             and (retrieve_mod._tokens(f.subject) & nf_tokens)
             and _same_contradiction_target(f, nf)
+            and not _same_meeting_source(db.get_meeting(f.meeting_id), new_meeting)
             and f.statement.strip() != nf.statement.strip()   # identical restatement is no conflict
             and ((db.get_meeting(f.meeting_id).date or "") if db.get_meeting(f.meeting_id) else "") <= new_date
         ]
@@ -310,6 +336,8 @@ def detect_contradictions(new_facts: list[KnowledgeFact]) -> list[Contradiction]
             idx = item.get("index")
             if not isinstance(idx, int) or not (0 <= idx < len(candidates)):
                 continue   # ignore hallucinated/out-of-range indices
+            if not _verdict_is_actual_conflict(item):
+                continue
             conflicts.append((candidates[idx], item))
         if not conflicts:
             continue
@@ -632,12 +660,16 @@ def contradiction_view() -> list[dict]:
     source meeting citations, and approximate listen-back timestamps."""
     out = []
     for c in db.all_contradictions():
+        old = _fact_citation(c.fact_a_id)
+        new = _fact_citation(c.fact_b_id)
+        if not old or not new:
+            continue
         out.append({
             "subject": c.subject,
             "explanation": c.explanation,
             "severity": c.severity,
-            "old": _fact_citation(c.fact_a_id),   # phát biểu cũ (bị thay thế)
-            "new": _fact_citation(c.fact_b_id),   # phát biểu mới
+            "old": old,   # phát biểu cũ (bị thay thế)
+            "new": new,   # phát biểu mới
         })
     return out
 

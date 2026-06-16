@@ -471,6 +471,28 @@ function severityBadge(severity = "") {
   return `<span class="severity-badge severity-${severityKey(label)}">${escapeHtml(label)}</span>`;
 }
 
+// A meeting's stable number is its id. Cited evidence shows "Họp #N" linking back
+// to the source meeting (replaces vague "trước/nay" wording in contradictions).
+function meetingNumberLabel(citation) {
+  const id = citation?.meeting_id;
+  if (!id) return "";
+  const title = citation.meeting_title || state.meetings.find((m) => Number(m.id) === Number(id))?.title || "";
+  return `#${id}${title ? ` · ${title}` : ""}`;
+}
+
+function citationChip(citation) {
+  if (!citation?.meeting_id) return "";
+  return `<button type="button" class="cite-chip" data-cite-meeting="${citation.meeting_id}" title="Mở cuộc họp">📍 Họp ${escapeHtml(meetingNumberLabel(citation))}</button>`;
+}
+
+function contradictionCites(c) {
+  const oldChip = citationChip(c.old);
+  const newChip = citationChip(c.new);
+  if (!oldChip && !newChip) return "";
+  const arrow = oldChip && newChip ? `<span class="cite-arrow">→</span>` : "";
+  return `<span class="cite-row">${oldChip}${arrow}${newChip}</span>`;
+}
+
 function renderStats() {
   $("meetingCount").textContent = state.stats.meetings ?? state.meetings.length;
   $("termCount").textContent = `${state.glossary.length} terms`;
@@ -494,6 +516,7 @@ function renderMeetings() {
           <div class="meeting-card group-meeting ${m.id === state.activeId ? "active" : ""}" data-meeting-id="${m.id}">
             <div class="meeting-compact-title">
               <span class="status-dot ${m.can_play_audio ? "ready" : ""}"></span>
+              <span class="meeting-num">#${m.id}</span>
               <textarea class="meeting-title-input" rows="2" readonly data-meeting-title="${m.id}" aria-label="Double-click to rename meeting">${escapeHtml(m.title || `Meeting #${m.id}`)}</textarea>
               <button class="meeting-delete" type="button" data-meeting-delete="${m.id}" aria-label="Delete meeting">x</button>
             </div>
@@ -662,7 +685,7 @@ function renderDigest() {
   const currentContradictions = activeContradictions();
   const currentResurfaced = activeResurfaced();
   const decisionRows = [
-    ...(m.key_points || []).map((text) => ({ text, detail: "Signal brief" })),
+    ...(m.key_points || []).map((text) => ({ text })),
     ...(m.decisions || []).map((d) => ({ text: d.text, timestamp: d.timestamp, detail: "Decision" })),
     ...factDecisions.map((f) => ({ text: `${f.subject}: ${f.statement}`, timestamp: f.timestamp, detail: `${f.type} · ${f.status}` })),
   ];
@@ -671,16 +694,18 @@ function renderDigest() {
       text: `${c.subject}: ${c.explanation}`,
       timestamp: c.new?.timestamp || c.old?.timestamp,
       severity: c.severity,
+      cites: contradictionCites(c),
     })),
     ...currentResurfaced.map((r) => ({
       text: `${r.subject}: ${r.explanation}`,
       timestamp: r.new?.timestamp || r.old?.timestamp,
       detail: r.kind || "Forgotten decision",
+      cites: contradictionCites(r),
     })),
   ];
   $("decisions").innerHTML = listHtml(decisionRows, (d) => renderLine(d.text, d.timestamp, d.detail));
-  $("contradictionsForgotten").innerHTML = listHtml(contradictionRows, (r) => renderLine(r.text, r.timestamp, r.detail, r.severity ? severityBadge(r.severity) : ""));
-  $("risks").innerHTML = listHtml(m.risks, (x) => renderLine(x, null, "Risk"));
+  $("contradictionsForgotten").innerHTML = listHtml(contradictionRows, (r) => renderLine(r.text, r.timestamp, r.detail, `${r.severity ? severityBadge(r.severity) : ""}${r.cites || ""}`));
+  $("risks").innerHTML = listHtml(m.risks, (x) => renderLine(x));
 }
 
 function actionsForActiveMeeting() {
@@ -805,19 +830,21 @@ function activeResurfaced() {
 function collectEvidenceMentions() {
   const m = state.active || {};
   const mentions = [];
-  const add = (quote, timestamp, label) => {
-    if (quote && timestamp) mentions.push({ quote: String(quote), timestamp, label });
+  const add = (quote, timestamp, label, meetingId = null) => {
+    if (!quote || !timestamp) return;
+    const cite = meetingId ? `${label} · Họp #${meetingId}` : label;
+    mentions.push({ quote: String(quote), timestamp, label: cite });
   };
   (m.decisions || []).forEach((d) => add(d.quote || d.text, d.timestamp, "Decision"));
   (m.action_items || []).forEach((a) => add(a.quote || a.task, a.timestamp, "Action"));
   (m.facts || []).forEach((f) => add(f.quote || f.statement, f.timestamp, f.type));
   activeContradictions().forEach((c) => {
-    add(c.new?.quote, c.new?.timestamp, "Contradiction");
-    add(c.old?.quote, c.old?.timestamp, "Contradiction");
+    add(c.new?.quote, c.new?.timestamp, "Contradiction", c.new?.meeting_id);
+    add(c.old?.quote, c.old?.timestamp, "Contradiction", c.old?.meeting_id);
   });
   activeResurfaced().forEach((r) => {
-    add(r.new?.quote, r.new?.timestamp, "Forgotten");
-    add(r.old?.quote, r.old?.timestamp, "Forgotten");
+    add(r.new?.quote, r.new?.timestamp, "Forgotten", r.new?.meeting_id);
+    add(r.old?.quote, r.old?.timestamp, "Forgotten", r.old?.meeting_id);
   });
   return mentions;
 }
@@ -1006,14 +1033,7 @@ function renderChat() {
     <div class="msg-row ${msg.role === "user" ? "user" : "assistant"}">
       ${msg.role === "assistant" ? '<img class="agent-avatar" src="./assets/mnemosyne-logo.png?v=20260616-logo" alt="" aria-hidden="true">' : ""}
       <div class="msg ${msg.role === "user" ? "user" : "assistant"}">
-        <p>${escapeHtml(msg.text).replace(/\n/g, "<br>")}</p>
-        ${msg.citations && msg.citations.length ? `<div class="citations">${msg.citations.map((c) => `
-          <span class="citation-pill">
-            <i class="citation-dot" aria-hidden="true"></i>
-            <span>#${escapeHtml(c.meeting_id || "?")} · ${escapeHtml(c.meeting_title || "")}${c.timestamp ? ` · ≈${escapeHtml(c.timestamp)}` : ""}</span>
-            ${c.quote ? `<small>${escapeHtml(c.quote)}</small>` : ""}
-          </span>
-        `).join("")}</div>` : ""}
+        <p>${escapeHtml(msg.text || "").replace(/\n/g, "<br>")}</p>
       </div>
     </div>
   `).join("");
@@ -1022,10 +1042,9 @@ function renderChat() {
 
 function renderSuggestions() {
   const suggestions = [
-    "Decision nào đã drift so với cuộc họp trước?",
+    "Decision nào đã thay đổi so với cuộc họp trước?",
     "Có claim nào đang mâu thuẫn với lịch sử không?",
-    "Action debt nào còn mở và ai đang sở hữu?",
-    "Ý tưởng nào từng bị bác nay resurfaced lại?",
+    "Ý tưởng nào từng bị bác nay được nhắc lại?",
   ];
   $("suggestions").innerHTML = suggestions.map((s) => `<button type="button" data-suggestion="${escapeHtml(s)}">${escapeHtml(s)}</button>`).join("");
   document.querySelectorAll("[data-suggestion]").forEach((btn) => {
@@ -1663,6 +1682,12 @@ function bindEvents() {
       seekToTimestamp(ts.dataset.ts);
       return;
     }
+    const cite = event.target.closest("[data-cite-meeting]");
+    if (cite) {
+      event.preventDefault();
+      selectMeeting(Number(cite.dataset.citeMeeting)).catch((e) => showToast(e.message));
+      return;
+    }
     const toggle = event.target.closest("[data-action-toggle]");
     if (toggle) {
       updateActionStatus(Number(toggle.dataset.actionId), toggle.checked ? "completed" : "pending", toggle).catch((e) => showToast(e.message));
@@ -1720,6 +1745,11 @@ function bindEvents() {
       state.chat.push({ role: "assistant", text: error.message, citations: [] });
       renderChat();
     }
+  });
+  $("chatInput").addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
+    event.preventDefault();
+    $("chatForm").requestSubmit();
   });
   $("toggleGlossaryBtn").addEventListener("click", () => {
     state.glossaryCollapsed = !state.glossaryCollapsed;

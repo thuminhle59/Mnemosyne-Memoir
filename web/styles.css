@@ -176,15 +176,15 @@ h1 { margin: 8px 0 8px; font-size: 32px; line-height: 1.06; font-weight: 600; }
 .wave i:nth-child(5), .wave i:nth-child(12) { height: 11px; }
 .wave i:nth-child(6), .wave i:nth-child(13) { height: 20px; }
 .wave i:nth-child(7), .wave i:nth-child(14) { height: 16px; }
-.signals { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 6px 0 14px; }
+.signals { display: grid; grid-template-columns: repeat(3, max-content); justify-content: start; gap: 8px; margin: 6px 0 14px; }
 .memory-hero { align-items: stretch; }
 .radar-card { min-width: 0; }
-.signal-card { min-height: 52px; display: flex; align-items: baseline; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: #fff; box-shadow: var(--shadow); }
+.signal-card { min-height: 44px; display: flex; align-items: baseline; gap: 8px; padding: 8px 11px; border: 1px solid var(--line); border-radius: 10px; background: #fff; box-shadow: var(--shadow); }
 .signal-card.red { background: var(--red-soft); border-color: var(--red-line); }
 .signal-card.green { background: var(--green-soft); border-color: #bdd1c8; }
 .signal-card.gold { background: var(--gold-soft); border-color: #e7d59d; }
-.signal-card span { min-width: 0; color: var(--muted); font-family: "JetBrains Mono", monospace; font-size: 9px; text-transform: uppercase; letter-spacing: .08em; line-height: 1.25; }
-.signal-card strong { flex: 0 0 auto; font-family: "Newsreader", Georgia, serif; font-size: 24px; line-height: .95; font-weight: 600; }
+.signal-card span { min-width: 0; color: var(--muted); font-family: "JetBrains Mono", monospace; font-size: 8.5px; text-transform: uppercase; letter-spacing: .08em; line-height: 1.25; }
+.signal-card strong { flex: 0 0 auto; font-family: "Newsreader", Georgia, serif; font-size: 22px; line-height: .95; font-weight: 600; }
 .transcript { display: grid; gap: 8px; }
 .cue { display: flex; gap: 20px; padding: 13px 16px; border-radius: 12px; background: transparent; }
 .cue.active { background: #fff3ec; box-shadow: inset 3px 0 0 var(--red); }
@@ -231,6 +231,11 @@ h1 { margin: 8px 0 8px; font-size: 32px; line-height: 1.06; font-weight: 600; }
 .severity-high { border: 1px solid var(--red-line); background: var(--red-soft); color: var(--red); }
 .severity-medium { border: 1px solid #e5c66e; background: #fff4cf; color: #8a6410; }
 .severity-low { border: 1px solid #b7d5c5; background: var(--green-soft); color: var(--green); }
+.meeting-num { flex: 0 0 auto; color: var(--red); font-family: "JetBrains Mono", monospace; font-size: 11px; font-weight: 800; }
+.cite-row { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+.cite-arrow { color: var(--muted); font-weight: 800; }
+.cite-chip { display: inline-flex; align-items: center; gap: 3px; border: 1px solid var(--line); border-radius: 999px; background: #fff; padding: 1px 9px; color: var(--text); font-size: 10.5px; font-weight: 700; cursor: pointer; }
+.cite-chip:hover { border-color: var(--red); color: var(--red); }
 .action-workbench { min-height: min(62vh, 660px); display: flex; flex-direction: column; }
 .action-workbench ul { min-height: 0; overflow: auto; }
 .card-title-row { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 8px; }
@@ -258,7 +263,7 @@ h1 { margin: 8px 0 8px; font-size: 32px; line-height: 1.06; font-weight: 600; }
 .transcript-line mark { background: var(--red-soft); color: var(--red); padding: 0 2px; border-radius: 3px; }
 
 .qa { min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--rail); border-left: 1px solid var(--line); }
-.claude-qa { margin: 16px; min-height: calc(100vh - 92px); border: 1px solid var(--line); border-radius: 16px; background: var(--surface); box-shadow: var(--shadow); overflow: hidden; }
+.claude-qa { margin: 0; min-height: calc(100vh - 60px); background: transparent; overflow: hidden; }
 .qa-head { padding: 18px; border-bottom: 1px solid var(--line); background: var(--surface); }
 .qa-title-row { display: flex; align-items: center; gap: 11px; }
 .qa-agent-logo { width: 34px; height: 34px; flex: 0 0 34px; border-radius: 50%; object-fit: cover; background: rgba(212, 43, 43, .12); }
@@ -276,12 +281,7 @@ h1 { margin: 8px 0 8px; font-size: 32px; line-height: 1.06; font-weight: 600; }
 .msg-row .msg { max-width: calc(100% - 37px); }
 .msg p { margin: 0; }
 .msg.user { align-self: flex-end; background: var(--red); border-color: var(--red); color: #fff; }
-.cite, .citations { display: grid; gap: 6px; margin-top: 10px; color: var(--muted); font-size: 12px; }
-.citation-pill { width: fit-content; max-width: 100%; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 7px; align-items: center; border: 1px solid var(--line); border-radius: 10px; background: #fff; padding: 7px 9px; color: var(--muted); }
-.citation-pill span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.citation-pill small { grid-column: 2; color: var(--muted); line-height: 1.3; }
-.citation-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
-.citations button { width: fit-content; max-width: 100%; border: 1px solid var(--line); border-radius: 999px; background: #fff; padding: 4px 9px; color: var(--muted); }
+.cite { display: grid; gap: 6px; margin-top: 10px; color: var(--muted); font-size: 12px; }
 .cite i { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
 .suggestions { display: grid; gap: 7px; padding: 0 18px 12px; }
 .quick-prompts button { text-align: left; border: 1px solid var(--line); border-radius: 10px; background: #fff; padding: 9px 11px; color: var(--text); font-size: 12.5px; line-height: 1.25; box-shadow: var(--shadow); }

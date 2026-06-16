@@ -239,6 +239,17 @@ def test_contradiction_view_enriches_both_sides():
     assert view[0]["old"]["meeting_title"] == "Họp 1"
 
 
+def test_contradiction_view_skips_orphaned_fact_links():
+    from models import Contradiction
+    mid = db.save_meeting(_report(title="Họp 1", date="2026-06-02", transcript="t"))
+    fids = db.save_facts(mid, [
+        KnowledgeFact(type="quyết định", subject="ngày launch", statement="30/6", quote="chốt 30/6"),
+    ])
+    db.save_contradiction(Contradiction(subject="ngày launch", explanation="orphan",
+                                        fact_a_id=fids[0], fact_b_id=999999))
+    assert brain.contradiction_view() == []
+
+
 # ---------------------------------------------------------------- ask
 
 def test_ask_returns_answer_with_enriched_citations(monkeypatch):
@@ -433,6 +444,48 @@ def test_detect_contradictions_is_one_call_per_new_fact(monkeypatch):
     monkeypatch.setattr(brain.llm, "chat", counting_chat)
     brain.detect_contradictions([nf])
     assert calls["n"] == 1                        # 3 candidates, still one batched call
+
+
+def test_detect_contradictions_skips_duplicate_meeting_source(monkeypatch):
+    """Re-ingesting the same source file/date should not create contradictions between
+    a detailed fact and a date-only fact extracted from the duplicate."""
+    m1 = db.save_meeting(_report(title="Bản 1", date="2026-05-01", transcript="t1"),
+                         source_file="meeting.mp3", dedup=False)
+    db.save_facts(m1, [KnowledgeFact(
+        type="cam kết",
+        subject="ngày cung cấp tài liệu kỹ thuật",
+        statement="Tech cung cấp tài liệu trước ngày 24/05/2026",
+    )])
+    m2 = db.save_meeting(_report(title="Bản 2", date="2026-05-01", transcript="t2"),
+                         source_file="meeting.mp3", dedup=False)
+    nf = KnowledgeFact(type="số liệu", subject="ngày cung cấp tài liệu kỹ thuật",
+                       statement="24/05/2026", source_meeting_id=m2)
+    db.save_facts(m2, [nf])
+
+    def boom(prompt, model, **k):
+        raise AssertionError("Duplicate source meetings must not reach LLM contradiction detection")
+
+    monkeypatch.setattr(brain.llm, "chat", boom)
+    assert brain.detect_contradictions([nf]) == []
+    assert db.counts()["contradictions"] == 0
+
+
+def test_detect_contradictions_discards_verdict_that_says_not_contradiction(monkeypatch):
+    m1 = db.save_meeting(_report(title="H1", date="2026-06-01", transcript="t1"))
+    db.save_facts(m1, [KnowledgeFact(type="số liệu", subject="test case regression",
+                                     statement="QA hoàn tất regression ngày 20/05/2026")])
+    m2 = db.save_meeting(_report(title="H2", date="2026-06-02", transcript="t2"))
+    nf = KnowledgeFact(type="số liệu", subject="test case regression",
+                       statement="Còn 12 test case chưa chạy xong", source_meeting_id=m2)
+    db.save_facts(m2, [nf])
+
+    monkeypatch.setattr(brain.llm, "chat", lambda prompt, model, **k: json.dumps(
+        {"conflicts": [{"index": 0,
+                        "explanation": "Không mâu thuẫn: một câu nói kế hoạch tương lai, một câu nói trạng thái hiện tại.",
+                        "severity": "thấp"}]}))
+
+    assert brain.detect_contradictions([nf]) == []
+    assert db.counts()["contradictions"] == 0
 
 
 # ---------------------------------------------------------------- quality: follow_up overdue

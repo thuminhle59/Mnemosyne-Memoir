@@ -90,7 +90,7 @@ def test_tablet_layout_keeps_sidebar_from_collapsing_under_chat():
     assert ".workspace { flex: 1; min-height: 0; display: grid; grid-template-columns: 268px minmax(520px, 1fr) 336px;" in css
     assert ".workspace { grid-template-columns: 244px minmax(360px, 1fr); }" in css
     assert ".terminology { flex: 0 0 auto;" in css
-    assert "styles.css?v=20260616-ingest-progress-live" in html
+    assert "styles.css?v=20260616-no-risk-detail" in html
 
 
 def test_terminology_section_is_compact_inside_sidebar():
@@ -111,7 +111,7 @@ def test_frontend_positions_memoir_as_decision_memory_agent():
 
     for label in [
         "Decision Memory",
-        "Decision Drift",
+        "Decision",
         "Summary",
         "Decisions",
         "Contradictions",
@@ -122,6 +122,11 @@ def test_frontend_positions_memoir_as_decision_memory_agent():
         "Ask Memoir",
     ]:
         assert label in html
+    assert "Decision Drift" not in html
+    assert "Contradiction Radar" not in html
+    assert "Action Memory" not in html
+    assert "<span>Contradiction</span>" in html
+    assert "<span>Action</span>" in html
     assert 'id="tabMemory" class="tab" href="#memoryView" data-tab="memory" onclick="switchTab(\'memory\')">Actions</a>' in html
     assert "Memory Ops" not in html
     assert "Highlights" not in html
@@ -149,7 +154,8 @@ def test_frontend_positions_memoir_as_decision_memory_agent():
     assert 'detail: "Contradiction"' not in js
     assert "const highlights" not in js
     assert 'const tp = $("topics")' not in js
-    assert ".signal-card { min-height: 52px; display: flex; align-items: baseline;" in css
+    assert ".signals { display: grid; grid-template-columns: repeat(3, max-content);" in css
+    assert ".signal-card { min-height: 44px; display: flex; align-items: baseline;" in css
     assert ".signal-card strong { flex: 0 0 auto;" in css
 
 
@@ -188,6 +194,20 @@ def test_meeting_summary_lives_inside_executive_brief_view():
     assert ".summary p + p" in css
     assert ".summary-groups" not in css
     assert ".summary-group" not in css
+
+
+def test_decision_list_does_not_render_signal_brief_detail():
+    js = (WEB / "app.js").read_text(encoding="utf-8")
+
+    assert '"Signal brief"' not in js
+    assert "...(m.key_points || []).map((text) => ({ text }))" in js
+
+
+def test_risk_list_does_not_render_risk_detail_label():
+    js = (WEB / "app.js").read_text(encoding="utf-8")
+
+    assert '$("risks").innerHTML = listHtml(m.risks, (x) => renderLine(x));' in js
+    assert '$("risks").innerHTML = listHtml(m.risks, (x) => renderLine(x, null, "Risk"));' not in js
 
 
 def test_summary_and_contradictions_are_scoped_to_selected_meeting():
@@ -229,8 +249,8 @@ def test_metric_cards_live_below_meeting_title_before_tabs():
     assert "<small>Conflicting claims" not in html
     assert "<small>Open commitments" not in html
     assert ".signal-card span { min-width: 0;" in css
-    assert "font-size: 9px" in css
-    assert "font-size: 24px" in css
+    assert "font-size: 8.5px" in css
+    assert "font-size: 22px" in css
 
 
 def test_memory_ops_filters_actions_to_selected_meeting():
@@ -840,17 +860,28 @@ def test_right_qa_panel_uses_claude_design_structure_with_memoir_colors():
     assert '<section class="qa-scope-card">' not in html
     assert '<div id="suggestions" class="suggestions quick-prompts"></div>' in html
     assert 'class="chat-form askbar qa-composer"' in html
+    assert '<textarea id="chatInput" rows="1" placeholder="Ask Memoir anything"></textarea>' in html
     assert '<span aria-hidden="true">↗</span>' in html
 
-    assert "citation-pill" in js
-    assert "citation-dot" in js
+    assert "function renderChatTextWithInlineCitations" not in js
+    assert "inlineCitationButton" not in js
+    assert "inline-cite" not in js
+    assert '<p>${escapeHtml(msg.text || "").replace(/\\n/g, "<br>")}</p>' in js
+    assert "citation-pill" not in js
+    assert "citation-dot" not in js
+    assert '<div class="citations">' not in js
+    assert "Họp #${escapeHtml(c.meeting_id || \"?\")}" not in js
     assert "Mình đã đọc xong transcript cuộc họp này. Hỏi bất cứ điều gì" in js
     assert "msg-row" in js
     assert "agent-avatar" in js
     assert "mnemosyne-logo.png?v=20260616-logo" in js
     assert "quick-prompts" in css
-    assert ".claude-qa { margin:" in css
-    assert "background: var(--surface)" in css
+    assert ".claude-qa { margin: 0;" in css
+    claude_qa_rule = css.split(".claude-qa {", 1)[1].split("}", 1)[0]
+    assert "border:" not in claude_qa_rule
+    assert "border-radius:" not in claude_qa_rule
+    assert "box-shadow:" not in claude_qa_rule
+    assert "background: transparent" in claude_qa_rule
     assert ".qa-title-row" in css
     assert ".qa-agent-logo" in css
     assert ".qa-title-main" in css
@@ -864,7 +895,30 @@ def test_right_qa_panel_uses_claude_design_structure_with_memoir_colors():
     assert ".qa-composer" in css
     assert ".msg-row" in css
     assert ".agent-avatar" in css
-    assert ".citation-pill" in css
+    assert ".inline-cite" not in css
+    assert ".citation-pill" not in css
+    assert ".citation-dot" not in css
     assert ".qa { min-width: 0;" in css
     assert "var(--red)" in css
     assert "var(--rail)" in css
+
+
+def test_qa_enter_submits_and_shift_enter_keeps_newline():
+    js = (WEB / "app.js").read_text(encoding="utf-8")
+
+    assert '$("chatInput").addEventListener("keydown", (event) => {' in js
+    assert 'event.key !== "Enter"' in js
+    assert "event.shiftKey" in js
+    assert "event.isComposing" in js
+    assert "event.preventDefault();" in js
+    assert '$("chatForm").requestSubmit();' in js
+
+
+def test_qa_suggestion_uses_vietnamese_change_wording():
+    js = (WEB / "app.js").read_text(encoding="utf-8")
+
+    assert '"Decision nào đã thay đổi so với cuộc họp trước?"' in js
+    assert "Decision nào đã drift so với cuộc họp trước?" not in js
+    assert "Action debt nào còn mở và ai đang sở hữu?" not in js
+    assert '"Ý tưởng nào từng bị bác nay được nhắc lại?"' in js
+    assert "Ý tưởng nào từng bị bác nay resurfaced lại?" not in js
