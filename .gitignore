@@ -35,8 +35,9 @@ build/
 *.docx
 *.pdf
 
-# Local demo media (large, do not commit)
-demo-meetings/
+# Demo meetings ARE committed (transcripts + generator scripts + sample audio).
+# Re-include the demo .mp3 audio that the global *.mp3 rule above would skip.
+!demo-meetings/*.mp3
 
 # Local design mockups / reversible UI drafts (keep locally, do not commit)
 web/backup-designs/

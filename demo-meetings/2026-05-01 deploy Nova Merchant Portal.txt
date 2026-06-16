@@ -1,0 +1,77 @@
+[00:00] Mở đầu và mục tiêu deploy
+Linh: Hôm nay là ngày 1 tháng 5 năm 2026. Mục tiêu cuộc họp là chốt hướng deploy tính năng Auto Settlement cho Nova Merchant Portal.
+Minh: Về kỹ thuật, backend settlement đã qua kiểm thử tích hợp nội bộ, nhưng dashboard reconciliation vẫn cần thêm kiểm tra tải.
+An: QA ghi nhận build hiện tại là RC zero point nine, còn 12 test case regression chưa chạy xong.
+
+[02:00] Mốc thời gian tổng quan
+Linh: Timeline đang đi theo ba giai đoạn: hoàn tất UAT ngày 20 tháng 5, pilot merchant ngày 1 tháng 6, go live canary ngày 15 tháng 6.
+Minh: Nếu giữ canary 20 phần trăm vào ngày 15 tháng 6, đội kỹ thuật có đủ thời gian theo dõi lỗi settlement lệch số.
+An: Em đề xuất giữ ngày 15 tháng 6 cho canary, không nên đẩy lên sớm hơn vì bộ test đối soát chưa đủ dữ liệu.
+Quyết định ghi nhận: Go live đầu tiên là canary 20 phần trăm ngày 15 tháng 6, không phải full rollout.
+
+[04:00] Phạm vi release
+Linh: Release lần này chỉ gồm Auto Settlement, bảng đối soát mới, và cảnh báo lệch tiền theo merchant.
+Minh: Không đưa bulk refund vào release này vì API refund chưa ổn định trong sandbox.
+An: QA đồng ý loại bulk refund khỏi phạm vi, để tránh tăng rủi ro rollback.
+
+[06:00] Tiến độ backend
+Linh: Minh cập nhật giúp chị phần backend theo thời gian, từ tuần này đến cuối tháng 5.
+Minh: Ngày 3 tháng 5 sẽ khóa schema settlement, ngày 10 tháng 5 hoàn tất worker retry, ngày 17 tháng 5 hoàn tất idempotency key.
+An: QA sẽ test idempotency từ ngày 18 đến ngày 20 tháng 5, ưu tiên case merchant gửi duplicate callback.
+
+[08:00] Tiến độ frontend
+Linh: Về frontend portal, tuần đầu tháng 5 sẽ xong màn hình settlement summary, tuần thứ hai xong chi tiết giao dịch.
+Minh: Cần thêm một API summary theo ngày, nhưng nếu chậm thì frontend vẫn fallback bằng endpoint list giao dịch.
+An: QA cần design freeze trước ngày 12 tháng 5 để viết test script ổn định.
+
+[10:00] Quyết định về OTP và bảo mật
+Linh: Có đề xuất bắt OTP cho lần đầu vào tính năng Auto Settlement, nhưng chị muốn nghe rủi ro vận hành.
+Minh: Nếu bật OTP ngay phase 1, merchant pilot có thể bị tăng friction. Em đề xuất hoãn mandatory OTP sang sau canary.
+An: QA đồng ý. Trong phase 1 chỉ cảnh báo bảo mật và audit log, chưa bắt OTP bắt buộc.
+Quyết định ghi nhận: Mandatory OTP bị hoãn khỏi phase 1; chỉ bật audit log và cảnh báo bảo mật.
+
+[12:00] Tiến độ dữ liệu pilot
+Linh: Từ ngày 15 tháng 5, đội vận hành sẽ chọn 30 merchant pilot có volume vừa phải.
+Minh: Backend cần seed dữ liệu mapping merchant vào ngày 18 tháng 5 để có đủ thời gian dry run.
+An: QA sẽ so sánh dữ liệu settlement cũ và mới trong ba ngày 21, 22, 23 tháng 5.
+
+[14:00] Rủi ro đối soát lệch số
+Linh: Rủi ro lớn nhất là lệch số giữa transaction ledger và settlement summary.
+Minh: Em sẽ thêm reconciliation job chạy mỗi giờ trong pilot, nếu lệch quá 0.1 phần trăm thì alert.
+An: QA cần alert đi vào Slack và email, vì đội vận hành không theo dashboard liên tục.
+
+[16:00] Rollback và monitoring
+Linh: Rollback window của canary cần rõ. Nếu merchant bị ảnh hưởng, đội mình phản ứng trong bao lâu?
+Minh: Em đề xuất rollback trong 2 giờ sau khi phát hiện lỗi nghiêm trọng, bằng feature flag per merchant.
+An: QA cần checklist rollback trước ngày 25 tháng 5, bao gồm tắt feature flag và restore settlement view cũ.
+Quyết định ghi nhận: Rollback window mục tiêu là 2 giờ sau khi xác nhận lỗi nghiêm trọng.
+
+[18:00] Tiến độ tài liệu
+Linh: User guide cho merchant phải sẵn sàng trước pilot ngày 1 tháng 6.
+Minh: Tech sẽ cung cấp ảnh màn hình và mô tả API trạng thái settlement trước ngày 24 tháng 5.
+An: QA sẽ review user guide cùng Support ngày 26 tháng 5.
+
+[20:00] Go no-go criteria
+Linh: Điều kiện go no-go cho ngày 15 tháng 6 là gì?
+Minh: Không có bug severity cao, lệch settlement dưới 0.1 phần trăm, latency summary dưới 2 giây p95.
+An: Thêm điều kiện Support phải xác nhận đã training cho nhóm trực pilot.
+
+[22:00] Chủ sở hữu hành động
+Linh: Minh owner backend timeline, An owner QA và rollback checklist, chị owner merchant pilot và communication.
+Minh: Em nhận deadline 17 tháng 5 cho idempotency, 24 tháng 5 cho tài liệu kỹ thuật.
+An: Em nhận deadline 20 tháng 5 regression, 25 tháng 5 rollback checklist, 26 tháng 5 review user guide.
+
+[24:00] Tóm tắt tiến độ theo thời gian
+Linh: Đến ngày 1 tháng 5, chúng ta đang ở giai đoạn build gần xong, chưa vào UAT chính thức.
+Minh: Đến ngày 20 tháng 5 phải xong UAT, ngày 1 tháng 6 pilot, ngày 15 tháng 6 canary 20 phần trăm.
+An: QA sẽ cập nhật tiến độ hằng tuần, nếu regression trễ hơn ngày 20 tháng 5 thì phải báo go no-go sớm.
+
+[26:00] Kết luận
+Linh: Chốt lại: giữ canary 20 phần trăm ngày 15 tháng 6, chưa bật mandatory OTP phase 1, không đưa bulk refund vào scope.
+Minh: Tech sẽ không đổi timeline nếu không có bug nghiêm trọng trong UAT.
+An: QA ghi nhận ba quyết định này để so sánh trong các cuộc họp sau.
+
+[28:00] Nhắc lại cam kết
+Linh: Cuộc họp kết thúc với cam kết theo dõi tiến độ hằng tuần đến ngày go live.
+Minh: Nếu đến ngày 1 tháng 6 pilot không ổn, team sẽ không chuyển sang canary ngày 15 tháng 6.
+An: Em sẽ dùng các mốc thời gian hôm nay làm baseline cho test plan.

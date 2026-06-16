@@ -1,0 +1,77 @@
+[00:00] Mở đầu go no-go cuối
+Linh: Hôm nay là ngày 10 tháng 6 năm 2026. Mục tiêu là chốt quyết định deploy Auto Settlement cho Nova Merchant Portal.
+Minh: Backend đã fix timezone ngày 3 tháng 6, optimize summary ngày 7 tháng 6, và latency p95 hiện còn 1.7 giây.
+An: QA hoàn tất regression 100 phần trăm, còn một bug severity thấp về wording.
+
+[02:00] Tiến độ timeline
+Linh: So với baseline ngày 1 tháng 5, UAT trễ tám ngày nhưng pilot đã có dữ liệu đủ từ ngày 1 đến ngày 9 tháng 6.
+Minh: Pilot hiện có 24 merchant, tỷ lệ retry callback giảm từ 1.8 phần trăm xuống 0.3 phần trăm.
+An: QA xác nhận tiêu chí lệch settlement dưới 0.1 phần trăm đã đạt trong ba ngày liên tiếp.
+
+[04:00] Resolve conflict ngày deploy
+Linh: Cuộc họp ngày 1 tháng 6 có conflict giữa full rollout ngày 12 tháng 6 và canary 20 phần trăm ngày 15 tháng 6.
+Minh: Sau dữ liệu pilot, em đề xuất không full rollout ngày 12 tháng 6. Chuyển sang canary 20 phần trăm ngày 18 tháng 6 để có thêm ba ngày monitoring.
+An: QA đồng ý. Quyết định cuối là canary 20 phần trăm ngày 18 tháng 6, không full rollout ngày 12 tháng 6.
+Quyết định ghi nhận: Conflict được resolve: bỏ full rollout ngày 12 tháng 6; chọn canary 20 phần trăm ngày 18 tháng 6.
+
+[06:00] Resolve conflict OTP
+Linh: Về OTP, cuộc họp 1 hoãn mandatory OTP khỏi phase 1, cuộc họp 2 có yêu cầu bật ngay.
+Minh: Compliance đã đồng ý tạm thời: phase 1 dùng audit log và OTP optional, mandatory OTP chuyển sang phase 2 sau canary.
+An: QA ghi nhận conflict OTP đã resolve theo hướng không bắt buộc trong phase 1.
+Quyết định ghi nhận: OTP mandatory không bật ở phase 1; chỉ bật optional OTP và audit log.
+
+[08:00] Quy trình deploy theo ngày
+Linh: Ngày 10 tháng 6 chốt go no-go, ngày 11 tháng 6 freeze code, ngày 12 tháng 6 mở rộng pilot lên 50 merchant.
+Minh: Ngày 14 tháng 6 hoàn tất training Support, ngày 17 tháng 6 chạy dry run rollback, ngày 18 tháng 6 canary.
+An: QA sẽ chạy smoke test mỗi sáng từ ngày 12 đến ngày 18 tháng 6.
+
+[10:00] Điều kiện canary
+Linh: Điều kiện canary gồm latency p95 dưới 2 giây, lệch settlement dưới 0.1 phần trăm, không bug severity cao.
+Minh: Tech thêm điều kiện queue retry không vượt 500 message trong 30 phút.
+An: QA thêm điều kiện Support xác nhận trực ca trong hai giờ đầu canary.
+
+[12:00] Kế hoạch rollback
+Linh: Rollback window 2 giờ được giữ cho canary 20 phần trăm.
+Minh: Feature flag sẽ tắt theo merchant group, không tắt toàn bộ portal.
+An: QA đã có checklist rollback gồm tắt flag, restore view cũ, kiểm tra settlement summary và gửi thông báo cho Support.
+
+[14:00] Trạng thái tài liệu
+Linh: User guide đã cập nhật phần settlement failed, retry, và trạng thái chờ đối soát.
+Minh: Tech đã bổ sung ảnh màn hình và mô tả lỗi timezone.
+An: QA đã review cùng Support ngày 9 tháng 6, chỉ còn sửa wording.
+
+[16:00] Theo dõi sau canary
+Linh: Trong 24 giờ đầu sau ngày 18 tháng 6, team cần theo dõi dashboard mỗi giờ.
+Minh: Tech sẽ trực latency, queue retry, và reconciliation job.
+An: QA sẽ trực test smoke trên ba merchant mẫu lúc 10 giờ, 14 giờ, và 18 giờ.
+
+[18:00] Plan sau canary
+Linh: Nếu canary ổn 48 giờ, ngày 20 tháng 6 mở lên 50 phần trăm merchant.
+Minh: Nếu 50 phần trăm ổn đến ngày 23 tháng 6, ngày 24 tháng 6 full rollout.
+An: QA yêu cầu full rollout chỉ khi không phát sinh bug severity cao trong giai đoạn 50 phần trăm.
+
+[20:00] Rủi ro còn lại
+Linh: Rủi ro còn lại là merchant hiểu nhầm trạng thái pending settlement là lỗi.
+Minh: Support sẽ dùng script giải thích mới, và portal thêm tooltip ở màn hình summary.
+An: QA sẽ kiểm tra tooltip trong build freeze ngày 11 tháng 6.
+
+[22:00] Chủ sở hữu hành động
+Linh: Minh owner freeze code ngày 11, dry run rollback ngày 17, và monitoring ngày 18.
+Minh: An owner smoke test, wording user guide, và go-live checklist.
+An: Linh owner communication với Marketing, Support, và nhóm merchant pilot.
+
+[24:00] Tóm tắt tiến độ liên tục
+Linh: Từ ngày 1 tháng 5 đến 10 tháng 6, dự án đi từ build gần xong, sang pilot trễ, rồi đạt điều kiện canary sau khi fix latency.
+Minh: Quy trình không còn theo full rollout sớm. Quy trình mới là pilot mở rộng, canary 20 phần trăm, 50 phần trăm, rồi full rollout.
+An: QA ghi nhận đây là trạng thái mới nhất để các cuộc họp sau dùng làm baseline.
+
+[26:00] Quyết định cuối
+Linh: Chốt quyết định: canary Auto Settlement ngày 18 tháng 6, 20 phần trăm merchant, OTP optional, rollback window 2 giờ.
+Minh: Tech đồng ý và sẽ không nhận thêm scope mới trước canary.
+An: QA đồng ý go nếu build freeze ngày 11 tháng 6 không phát sinh bug severity cao.
+Quyết định ghi nhận: Quyết định mới thay thế đề xuất full rollout ngày 12 tháng 6.
+
+[28:00] Kết thúc
+Linh: Cảm ơn mọi người. Meeting này đóng các conflict từ ngày 1 tháng 6 và cập nhật baseline deploy mới.
+Minh: Em sẽ gửi release checklist trong hôm nay.
+An: QA sẽ đánh dấu completed cho các action đã xong và pending cho smoke test sau freeze.
