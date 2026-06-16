@@ -291,3 +291,5 @@ def test_glossary_suggestions_extract_unknown_terms(monkeypatch):
     assert "AgentBase" in terms
     assert "MCP Server" in terms
     assert "OpenClaw" not in terms
+    counts = [item["count"] for item in response.json()["suggestions"]]
+    assert counts == sorted(counts, reverse=True)

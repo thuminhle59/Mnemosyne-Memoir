@@ -21,6 +21,7 @@ import db
 import analyze
 import transcribe
 import retrieve as retrieve_mod
+import mailer
 from models import (
     MeetingReport, KnowledgeFact, FactList, Contradiction, Answer, Citation,
 )
@@ -137,11 +138,27 @@ def correct_terms(text: str) -> str:
 
 def _facts_prompt(report: MeetingReport, transcript: str) -> str:
     return (
-        "Bạn là trợ lý phân tích cuộc họp. Từ biên bản và transcript bên dưới, hãy "
-        "TRÍCH các 'fact nguyên tử' — mỗi fact là MỘT phát biểu độc lập, đã chuẩn hoá, "
-        "thuộc các loại: quyết định, fact, cam kết, số liệu, giả định, rủi ro.\n"
-        "Mỗi fact cần có 'subject' ngắn gọn (chủ đề, ví dụ 'ngày launch', 'ngân sách Q3') "
-        "để sau này đối chiếu xuyên cuộc họp, và 'quote' là câu gốc làm bằng chứng (nếu có).\n"
+        "Bạn là trợ lý phân tích cuộc họp. Từ biên bản và transcript bên dưới, hãy TRÍCH các "
+        "'fact nguyên tử' để LƯU VÀO BỘ NHỚ TỔ CHỨC, dùng đối chiếu xuyên NHIỀU cuộc họp.\n"
+        "Loại fact: 'quyết định' (chốt làm/không làm việc gì), 'cam kết' (ai đó nhận một việc, "
+        "có thể kèm hạn), 'số liệu' (con số/chỉ số/ngày tháng cụ thể), 'fact' (sự kiện/trạng thái "
+        "khách quan), 'giả định', 'rủi ro'.\n"
+        "QUY TẮC CHẤT LƯỢNG (BẮT BUỘC — quyết định độ chính xác khi đối chiếu về sau):\n"
+        "1. SUBJECT: cụm danh từ NGẮN, CHUẨN HOÁ, và NHẤT QUÁN cho cùng một chủ đề — DÙNG LẠI "
+        "đúng MỘT cách gọi cho cùng một việc (vd luôn dùng 'ngày go-live', đừng lúc 'ngày deploy' "
+        "lúc 'ngày canary' lúc 'quyết định go canary'). KHÔNG nhét động từ/kết luận vào subject.\n"
+        "2. STATEMENT: phải TỰ ĐỦ NGHĨA và chứa GIÁ TRỊ TUYỆT ĐỐI (ngày/số/kết luận cụ thể). "
+        "KHÔNG tham chiếu 'như trên'/'phát biểu trước'. KHÔNG tạo fact dạng SỐ LIỆU PHÁI SINH hay "
+        "so sánh tương đối (vd ĐỪNG ghi 'trễ 8 ngày so với baseline'; hãy ghi giá trị thật: "
+        "'UAT hoàn tất ngày 28/5, kế hoạch ban đầu là 20/5').\n"
+        "3. QUOTE: câu GỐC NGUYÊN VĂN trích từ transcript (để định vị thời điểm); nếu không có "
+        "câu gốc rõ ràng thì để null — KHÔNG bịa quote.\n"
+        "4. Mỗi claim chỉ MỘT fact; GỘP các câu nhắc lại cùng nội dung. BỎ QUA chào hỏi, nói đùa, "
+        "câu xã giao và thủ tục vụn vặt không có giá trị ghi nhớ.\n"
+        "5. KHÔNG trích META-BÌNH LUẬN của biên bản về chính nó (vd 'Quyết định ghi nhận:...', "
+        "'Ghi nhận có mâu thuẫn...', 'đánh dấu conflict để họp sau xử lý') thành fact. Hãy trích "
+        "NỘI DUNG GỐC bên dưới (giá trị/quyết định thực), KHÔNG trích câu nói rằng 'có mâu thuẫn'. "
+        "Subject KHÔNG được là 'conflict...'/'ghi nhận...'.\n"
         "Trả về DUY NHẤT JSON hợp lệ, KHÔNG markdown, KHÔNG giải thích.\n"
         f"Schema:\n{_FACT_SCHEMA}\n\n"
         f"Tóm tắt: {report.summary}\n"
@@ -149,8 +166,22 @@ def _facts_prompt(report: MeetingReport, transcript: str) -> str:
     )
 
 
+def _dedupe_facts(facts: list[KnowledgeFact]) -> list[KnowledgeFact]:
+    """Drop within-meeting duplicates (same subject+statement, case/space-insensitive),
+    keeping the first occurrence — fewer redundant facts = less downstream noise."""
+    seen: set[tuple] = set()
+    out: list[KnowledgeFact] = []
+    for f in facts:
+        key = (" ".join(f.subject.lower().split()), " ".join(f.statement.lower().split()))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(f)
+    return out
+
+
 def extract_facts(report: MeetingReport, transcript: str) -> list[KnowledgeFact]:
-    """One LLM pass → atomic KnowledgeFact[]. Best-effort: returns [] on failure
+    """One LLM pass → atomic KnowledgeFact[], deduped. Best-effort: returns [] on failure
     so a meeting still ingests (report is the source of truth) even if extraction fails."""
     try:
         data = _chat_json(
@@ -160,24 +191,78 @@ def extract_facts(report: MeetingReport, transcript: str) -> list[KnowledgeFact]
     except ValueError:
         return []
     try:
-        return FactList.model_validate(data).facts
+        return _dedupe_facts(FactList.model_validate(data).facts)
     except Exception:  # noqa: BLE001 - shape drift -> no facts rather than crash
         return []
 
 
 # ---------------------------------------------------------------- contradictions
 
-def _contra_prompt(new: KnowledgeFact, old_subject: str, old_statement: str) -> str:
+# Only concrete claims trigger contradiction detection; speculative types
+# (assumptions, risks) are noisy and routinely flag false conflicts.
+_CONCRETE_TYPES = ("quyết định", "fact", "số liệu", "cam kết")
+# Cap candidates per new fact so a heavily-discussed subject can't blow up one prompt.
+_MAX_CANDIDATES = 40
+
+_CONTRA_RULES = (
+    "Coi là mâu thuẫn KHI cùng nói về MỘT việc/chủ đề mà giá trị/kết luận nghịch nhau "
+    "(không thể cùng đúng). KHÔNG coi là mâu thuẫn nếu: (a) là hai việc khác nhau; "
+    "(b) phát biểu mới chỉ CẬP NHẬT/CHI TIẾT HOÁ bình thường; (c) hai câu thực chất mô tả "
+    "CÙNG MỘT thực tế nhưng diễn đạt khác, hoặc một câu là SỐ LIỆU PHÁI SINH/tính lại từ "
+    "câu kia (ví dụ 'trễ đến ngày 28/5' và 'trễ 8 ngày so với 20/5' là NHẤT QUÁN). "
+    "Khi còn phân vân, KHÔNG coi là mâu thuẫn."
+)
+
+_PILOT_SELECTION_TOKENS = {
+    "chon", "select", "selection", "shortlist", "lua", "danh", "sach", "onboard", "onboarding"
+}
+
+
+def _fact_tokens(fact) -> set[str]:
+    return retrieve_mod._tokens(f"{getattr(fact, 'subject', '')} {getattr(fact, 'statement', '')}")
+
+
+def _same_contradiction_target(old, new: KnowledgeFact) -> bool:
+    """Cheap guard before the LLM: dates for selecting pilot merchants and dates for
+    running the pilot are different milestones, even if their subjects share words."""
+    old_tokens = _fact_tokens(old)
+    new_tokens = _fact_tokens(new)
+    old_selection = bool(old_tokens & _PILOT_SELECTION_TOKENS)
+    new_selection = bool(new_tokens & _PILOT_SELECTION_TOKENS)
+    if "pilot" in old_tokens and "pilot" in new_tokens and old_selection != new_selection:
+        return False
+    return True
+
+
+def _batch_contra_prompt(new: KnowledgeFact, candidates: list, new_when: str = "") -> str:
+    """One prompt comparing a new fact against ALL its same-subject candidates at once;
+    the model returns the indices that conflict (collapses N×M pairwise calls into N)."""
+    new_ctx = f" [{new_when}]" if new_when else ""
+    lines = []
+    for i, (old, when) in enumerate(candidates):
+        ctx = f" [{when}]" if when else ""
+        lines.append(f"  {i}. (chủ đề '{old.subject}'){ctx}: {old.statement}")
+    listing = "\n".join(lines)
     return (
-        "Hai phát biểu sau đến từ các cuộc họp khác nhau. Chúng có MÂU THUẪN không "
-        "(nghịch nhau, KHÔNG THỂ cùng đúng về cùng một việc)? Lưu ý: chỉ coi là mâu thuẫn "
-        "nếu cùng nói về MỘT việc/chủ đề mà giá trị/kết luận khác nhau; nếu là hai việc "
-        "khác nhau thì KHÔNG mâu thuẫn.\n"
-        f"Phát biểu CŨ (chủ đề '{old_subject}'): {old_statement}\n"
-        f"Phát biểu MỚI (chủ đề '{new.subject}'): {new.statement}\n"
-        'Trả về DUY NHẤT JSON: {"contradicts": true|false, "explanation": str, '
-        '"severity": "cao"|"trung bình"|"thấp"}'
+        f"Phát biểu MỚI{new_ctx} (chủ đề '{new.subject}'): {new.statement}\n\n"
+        "Dưới đây là các phát biểu CŨ cùng chủ đề từ các cuộc họp trước (đánh số). "
+        "Hãy chỉ ra những phát biểu cũ MÂU THUẪN với phát biểu mới.\n"
+        f"{_CONTRA_RULES}\n\n"
+        f"DANH SÁCH CŨ:\n{listing}\n\n"
+        "Với mỗi mâu thuẫn, 'explanation' nêu rõ sự THAY ĐỔI theo thời gian: phát biểu CŨ (từ "
+        "cuộc họp TRƯỚC) nêu điều gì, phát biểu MỚI (cuộc họp sau, tức phát biểu gốc ở trên) "
+        "thay đổi thành gì — viết 1 câu theo dạng 'Trước: X → Nay: Y'. "
+        "'severity' theo mức ảnh hưởng. Nếu không có cái nào mâu thuẫn, trả về danh sách rỗng.\n"
+        'Trả về DUY NHẤT JSON: {"conflicts": [{"index": int, "explanation": str, '
+        '"severity": "cao"|"trung bình"|"thấp"}]}'
     )
+
+
+def _when(meeting) -> str:
+    """Short 'title — date' label for a meeting, for grounding LLM verdicts."""
+    if not meeting:
+        return ""
+    return " — ".join(p for p in (meeting.title, meeting.date) if p)
 
 
 def detect_contradictions(new_facts: list[KnowledgeFact]) -> list[Contradiction]:
@@ -187,46 +272,88 @@ def detect_contradictions(new_facts: list[KnowledgeFact]) -> list[Contradiction]
     found: list[Contradiction] = []
     all_active = [f for f in db.all_facts(limit=10000) if f.status == "hiệu lực"]
     for nf in new_facts:
-        if nf.source_meeting_id is None:
+        if nf.source_meeting_id is None or nf.type not in _CONCRETE_TYPES:
             continue
+        new_when = _when(db.get_meeting(nf.source_meeting_id))
         # Candidates = earlier active facts whose subject SHARES a token with this one.
         # Exact-subject matching misses conflicts when the model words the same topic
         # differently across meetings ("ngày launch" vs "ngày ra mắt"); the LLM verdict
         # below filters out coincidental token overlaps.
         nf_tokens = retrieve_mod._tokens(nf.subject)
+        new_meeting = db.get_meeting(nf.source_meeting_id)
+        new_date = (new_meeting.date or "") if new_meeting else ""
         candidates = [
             f for f in all_active
             if f.meeting_id != nf.source_meeting_id
             and (retrieve_mod._tokens(f.subject) & nf_tokens)
+            and _same_contradiction_target(f, nf)
+            and f.statement.strip() != nf.statement.strip()   # identical restatement is no conflict
+            and ((db.get_meeting(f.meeting_id).date or "") if db.get_meeting(f.meeting_id) else "") <= new_date
         ]
-        for old in candidates:
-            if old.statement.strip() == nf.statement.strip():
-                continue  # identical restatement, not a conflict
-            try:
-                verdict = _chat_json(
-                    _contra_prompt(nf, old.subject, old.statement),
-                    (config.REASONING_MODEL, config.REASONING_FALLBACK_MODEL),
-                )
-            except ValueError:
-                continue
-            if not verdict.get("contradicts"):
-                continue
-            # find the new fact's row id (same subject+statement+meeting)
-            new_id = next(
-                (f.id for f in db.facts_by_subject(nf.subject)
-                 if f.statement == nf.statement and f.meeting_id == nf.source_meeting_id),
-                None,
-            )
-            c = Contradiction(
-                subject=nf.subject,
-                explanation=verdict.get("explanation", ""),
-                severity=verdict.get("severity", "trung bình"),
-                fact_a_id=old.id, fact_b_id=new_id,
-            )
-            db.save_contradiction(c)
+        if not candidates:
+            continue
+        # most-recent-first, capped, so one prompt stays bounded on busy subjects
+        candidates.sort(key=lambda f: ((db.get_meeting(f.meeting_id).date or "")
+                                       if db.get_meeting(f.meeting_id) else "", f.id or 0),
+                        reverse=True)
+        candidates = candidates[:_MAX_CANDIDATES]
+        labeled = [(f, _when(db.get_meeting(f.meeting_id))) for f in candidates]
+
+        # ONE batched call: ask which candidates conflict (collapses N×M -> N calls).
+        try:
+            data = _chat_json(_batch_contra_prompt(nf, labeled, new_when=new_when),
+                              (config.REASONING_MODEL, config.REASONING_FALLBACK_MODEL))
+        except ValueError:
+            continue
+        conflicts: list[tuple] = []   # (old_fact, verdict)
+        for item in data.get("conflicts", []):
+            idx = item.get("index")
+            if not isinstance(idx, int) or not (0 <= idx < len(candidates)):
+                continue   # ignore hallucinated/out-of-range indices
+            conflicts.append((candidates[idx], item))
+        if not conflicts:
+            continue
+        # A new value routinely conflicts with several prior values of the same subject;
+        # supersede ALL of them but surface ONE row (most severe; tie -> most recent old).
+        for old, _v in conflicts:
             db.set_fact_status(old.id, "đã thay thế")
-            found.append(c)
+        _sev_rank = {"cao": 3, "trung bình": 2, "thấp": 1}
+        old, verdict = max(
+            conflicts,
+            key=lambda cv: (_sev_rank.get(cv[1].get("severity"), 2),
+                            (db.get_meeting(cv[0].meeting_id).date or "") if db.get_meeting(cv[0].meeting_id) else ""),
+        )
+        new_id = next(
+            (f.id for f in db.facts_by_subject(nf.subject)
+             if f.statement == nf.statement and f.meeting_id == nf.source_meeting_id),
+            None,
+        )
+        c = Contradiction(
+            subject=nf.subject,
+            explanation=verdict.get("explanation", ""),
+            severity=verdict.get("severity", "trung bình"),
+            fact_a_id=old.id, fact_b_id=new_id,
+        )
+        db.save_contradiction(c)
+        found.append(c)
     return found
+
+
+def redetect_all_contradictions() -> dict:
+    """Wipe existing contradictions, reset replaced facts, then re-run detection
+    chronologically across all meetings so temporal ordering is always correct."""
+    cleared = db.clear_all_contradictions()
+    # Process meetings oldest-first so each pass only sees truly earlier facts.
+    meetings = sorted(db.list_meetings(limit=10000), key=lambda m: (m.date or "", m.id or 0))
+    total_found = 0
+    for m in meetings:
+        facts = [f.to_model() for f in db.facts_of_meeting(m.id)
+                 if f.type in _CONCRETE_TYPES]
+        if not facts:
+            continue
+        found = detect_contradictions(facts)
+        total_found += len(found)
+    return {"cleared": cleared, "meetings_processed": len(meetings), "found": total_found}
 
 
 # ---------------------------------------------------------------- forgotten decisions
@@ -239,23 +366,35 @@ def _find_fact_id(nf: KnowledgeFact) -> int | None:
     )
 
 
-def _forgotten_prompt(new: KnowledgeFact, old_subject: str, old_statement: str) -> str:
+def _batch_forgotten_prompt(new: KnowledgeFact, candidates: list) -> str:
+    """One prompt comparing a new decision against ALL earlier same-subject statements;
+    the model picks the single strongest 'rejected/forgotten then resurfaced' match."""
+    lines = []
+    for i, (old, when) in enumerate(candidates):
+        ctx = f" [{when}]" if when else ""
+        lines.append(f"  {i}. (chủ đề '{old.subject}'){ctx}: {old.statement}")
+    listing = "\n".join(lines)
     return (
-        "Một phát biểu MỚI và một phát biểu CŨ (từ cuộc họp TRƯỚC) cùng chủ đề. Phát biểu mới "
-        "có phải là việc/ý tưởng ĐÃ TỪNG bị BÁC BỎ (rejected), hoặc ĐÃ NÊU RỒI BỊ BỎ QUÊN/chưa "
-        "làm (forgotten) ở cuộc họp cũ, nay được NHẮC LẠI không?\n"
-        f"CŨ (chủ đề '{old_subject}'): {old_statement}\n"
-        f"MỚI (chủ đề '{new.subject}'): {new.statement}\n"
-        "Chỉ trả 'rejected'/'forgotten' khi thực sự đúng; nếu chỉ là cập nhật/tiếp nối bình "
-        "thường thì 'none'.\n"
-        'Trả về DUY NHẤT JSON: {"resurfaced": true|false, '
+        f"Phát biểu MỚI (quyết định/cam kết) (chủ đề '{new.subject}'): {new.statement}\n\n"
+        "Dưới đây là các phát biểu CŨ cùng chủ đề từ các cuộc họp TRƯỚC (đánh số).\n"
+        "Phát biểu mới có phải là việc/ý tưởng mà ở cuộc họp cũ ĐÃ bị BÁC BỎ (rejected) hoặc "
+        "ĐÃ NÊU RỒI BỊ BỎ QUÊN/không làm (forgotten), nay BẤT NGỜ được NHẮC/ĐỀ XUẤT LẠI không?\n"
+        "RẤT QUAN TRỌNG — chỉ là 'rejected'/'forgotten' khi phát biểu CŨ cho thấy rõ việc đó từng "
+        "bị TỪ CHỐI hoặc BỎ DỞ. Nếu phát biểu mới chỉ NHẮC LẠI / TÁI XÁC NHẬN / TIẾP NỐI một "
+        "phương án ĐÃ ĐƯỢC THỐNG NHẤT và vẫn đang đi đúng hướng (kể cả khi diễn đạt khác hay chi "
+        "tiết hơn), thì đó là tính NHẤT QUÁN bình thường → kind='none', resurfaced=false. "
+        "Khi còn phân vân → 'none'.\n\n"
+        f"DANH SÁCH CŨ:\n{listing}\n\n"
+        "Nếu CÓ, chọn MỘT phát biểu cũ thể hiện rõ nhất việc bị bác/bỏ dở.\n"
+        'Trả về DUY NHẤT JSON: {"resurfaced": true|false, "index": int|null, '
         '"kind": "rejected"|"forgotten"|"none", "explanation": str}'
     )
 
 
 def detect_forgotten_decisions(new_facts: list[KnowledgeFact]) -> list[dict]:
     """For each new decision/commitment, check earlier meetings for the same topic
-    being rejected or raised-then-dropped, now resurfacing. Saves to db.resurfaced."""
+    being rejected or raised-then-dropped, now resurfacing. Saves to db.resurfaced.
+    One batched LLM call per new fact (all earlier same-subject statements at once)."""
     found: list[dict] = []
     all_facts = db.all_facts(limit=10000)
     for nf in new_facts:
@@ -265,6 +404,7 @@ def detect_forgotten_decisions(new_facts: list[KnowledgeFact]) -> list[dict]:
         if not nm:
             continue
         nf_tokens = retrieve_mod._tokens(nf.subject)
+        candidates = []
         for f in all_facts:
             if f.meeting_id == nf.source_meeting_id:
                 continue
@@ -275,18 +415,25 @@ def detect_forgotten_decisions(new_facts: list[KnowledgeFact]) -> list[dict]:
                 continue
             if f.statement.strip() == nf.statement.strip():
                 continue
-            try:
-                v = _chat_json(_forgotten_prompt(nf, f.subject, f.statement),
-                               (config.REASONING_MODEL, config.REASONING_FALLBACK_MODEL))
-            except ValueError:
-                continue
-            if not v.get("resurfaced") or v.get("kind") not in ("rejected", "forgotten"):
-                continue
-            new_id = _find_fact_id(nf)
-            db.save_resurfaced(nf.subject, v["kind"], v.get("explanation", ""), f.id, new_id)
-            found.append({"subject": nf.subject, "kind": v["kind"],
-                          "explanation": v.get("explanation", "")})
-            break  # one finding per new fact is enough
+            candidates.append((f, _when(om)))
+        if not candidates:
+            continue
+        candidates = candidates[:_MAX_CANDIDATES]
+        try:
+            v = _chat_json(_batch_forgotten_prompt(nf, candidates),
+                           (config.REASONING_MODEL, config.REASONING_FALLBACK_MODEL))
+        except ValueError:
+            continue
+        if not v.get("resurfaced") or v.get("kind") not in ("rejected", "forgotten"):
+            continue
+        idx = v.get("index")
+        if not isinstance(idx, int) or not (0 <= idx < len(candidates)):
+            continue   # need a valid pointer to the earlier statement
+        old = candidates[idx][0]
+        new_id = _find_fact_id(nf)
+        db.save_resurfaced(nf.subject, v["kind"], v.get("explanation", ""), old.id, new_id)
+        found.append({"subject": nf.subject, "kind": v["kind"],
+                      "explanation": v.get("explanation", "")})
     return found
 
 
@@ -497,6 +644,42 @@ def contradiction_view() -> list[dict]:
 
 # ---------------------------------------------------------------- ask (recall Q&A)
 
+def _relevant_contradictions(question: str, ctx: "retrieve_mod.RetrievedContext",
+                             cap: int = 8) -> list[dict]:
+    """Recorded contradictions whose subject overlaps the question or the retrieved
+    facts — so Q&A can proactively flag a decision that changed/conflicted over time."""
+    topic = retrieve_mod._tokens(question)
+    for f in ctx.facts:
+        topic |= retrieve_mod._tokens(f.subject)
+    if not topic:
+        return []
+    out = []
+    for c in contradiction_view():
+        if retrieve_mod._tokens(c["subject"]) & topic:
+            out.append(c)
+        if len(out) >= cap:
+            break
+    return out
+
+
+def _contradiction_block(items: list[dict]) -> str:
+    """Format relevant recorded contradictions for the Q&A context (empty if none)."""
+    if not items:
+        return ""
+    lines = ["\n### ⚠ MÂU THUẪN ĐÃ GHI NHẬN (liên quan câu hỏi) — "
+             "nếu câu trả lời chạm vào các chủ đề này, PHẢI nêu rõ đã từng đổi/mâu thuẫn:"]
+    for c in items:
+        lines.append(f"- [{c['severity']}] {c['subject']}: {c['explanation']}")
+        old, new = c.get("old"), c.get("new")
+        if old:
+            lines.append(f"    cũ: «{old['statement']}» (meeting_id={old['meeting_id']}, "
+                         f"{old['meeting_title']} — {old['date']})")
+        if new:
+            lines.append(f"    mới: «{new['statement']}» (meeting_id={new['meeting_id']}, "
+                         f"{new['meeting_title']} — {new['date']})")
+    return "\n".join(lines)
+
+
 def _ts_seconds(ts: str | None) -> int:
     if not ts:
         return 10 ** 9
@@ -545,6 +728,10 @@ def _ask_prompt(question: str, context: str) -> str:
         "cuộc họp (nói cùng thời điểm) như là lý do/bối cảnh của quyết định đó — nêu căn cứ.\n"
         "- Nếu một chủ đề/quyết định thay đổi qua thời gian, trình bày theo DÒNG THỜI GIAN và "
         "ưu tiên trạng thái MỚI NHẤT (theo ngày họp + ⏱); nói rõ nó thay cho cái cũ.\n"
+        "- Nếu chủ đề câu hỏi xuất hiện trong mục 'MÂU THUẪN ĐÃ GHI NHẬN', hãy MỞ ĐẦU câu trả lời "
+        "bằng ĐÚNG tiền tố in nghiêng kiểu markdown '*Mâu thuẫn:*' rồi trình bày diễn biến cũ → "
+        "mới (ưu tiên cái mới nhất); đừng trả lời như thể chỉ có một giá trị duy nhất. TUYỆT ĐỐI "
+        "KHÔNG dùng chữ 'CẢNH BÁO' hay emoji.\n"
         "- Mỗi ý phải kèm trích nguồn (meeting_id) trong 'citations'; khi có thể, trích câu gốc.\n"
         "- Nếu ngữ cảnh KHÔNG có thông tin, nói rõ 'Chưa từng được đề cập trong các cuộc họp.' "
         "Tuyệt đối không bịa.\n"
@@ -560,28 +747,39 @@ def ask(question: str, limit: int = 50) -> Answer:
     if ctx.is_empty():
         return Answer(text="Chưa có cuộc họp nào được ghi nhớ.", citations=[])
 
+    context = _context_block(ctx) + _contradiction_block(_relevant_contradictions(question, ctx))
     try:
         data = _chat_json(
-            _ask_prompt(question, _context_block(ctx)),
+            _ask_prompt(question, context),
             (config.REASONING_MODEL, config.REASONING_FALLBACK_MODEL),
         )
     except ValueError:
         return Answer(text="Xin lỗi, không tạo được câu trả lời lúc này.", citations=[])
 
-    # enrich citations with meeting title/date + approximate listen-back timestamp
+    # enrich citations with meeting title/date + approximate listen-back timestamp.
+    # Drop citations whose meeting_id isn't a real meeting (model occasionally invents
+    # ids) and dedupe by (meeting_id, quote) so the same source isn't listed twice.
     citations: list[Citation] = []
+    seen: set[tuple] = set()
     for c in data.get("citations", []):
         mid = c.get("meeting_id")
         m = db.get_meeting(mid) if mid else None
+        if not m:                      # invalid/hallucinated id -> not a usable citation
+            continue
         quote = c.get("quote", "")
+        key = (mid, quote.strip())
+        if key in seen:
+            continue
+        seen.add(key)
         citations.append(Citation(
             meeting_id=mid,
-            meeting_title=m.title if m else "",
-            date=m.date if m else "",
+            meeting_title=m.title,
+            date=m.date,
             quote=quote,
-            timestamp=estimate_timestamp(m, quote) if m else None,
+            timestamp=estimate_timestamp(m, quote),
         ))
-    return Answer(text=data.get("answer", ""), citations=citations)
+    answer_text = data.get("answer", "").strip() or "Chưa từng được đề cập trong các cuộc họp."
+    return Answer(text=answer_text, citations=citations)
 
 
 # ---------------------------------------------------------------- digest
@@ -667,11 +865,39 @@ def _followup_prompt(action_task: str, owner: str, deadline: str, later_context:
     )
 
 
+def _is_overdue(deadline: str | None, today: str | None = None) -> bool:
+    """True only for an ISO YYYY-MM-DD deadline strictly before today. Free-text
+    deadlines ('cuối Q3') return False — we never guess overdue from prose."""
+    if not deadline:
+        return False
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", deadline.strip()):
+        return False
+    today = today or _dt.date.today().isoformat()
+    return deadline.strip() < today
+
+
+def _later_meeting_block(m, task: str) -> str:
+    """Summary + decisions + task-relevant facts of a later meeting, so follow-up
+    judges status from concrete evidence rather than the summary alone."""
+    lines = [f"[meeting_id={m.id}] {m.title} ({m.date}): {m.summary}"]
+    task_tokens = retrieve_mod._tokens(task)
+    try:
+        for d in m.report().decisions:
+            lines.append(f"   • quyết định: {d.text}")
+    except Exception:  # noqa: BLE001 - bad report_json -> skip decisions
+        pass
+    for f in db.facts_of_meeting(m.id):
+        if retrieve_mod._tokens(f.subject) & task_tokens or retrieve_mod._tokens(f.statement) & task_tokens:
+            lines.append(f"   • ({f.type}) {f.subject}: {f.statement}")
+    return "\n".join(lines)
+
+
 def follow_up() -> list[dict]:
     """Re-check each not-done action against meetings that happened AFTER it, update
     its status, and record where it was re-mentioned (action_links)."""
     meetings = db.list_meetings(limit=10000)
     by_id = {m.id: m for m in meetings}
+    today = _dt.date.today().isoformat()
     results: list[dict] = []
 
     for a in db.all_actions():
@@ -681,21 +907,68 @@ def follow_up() -> list[dict]:
         src_date = src.date if src else ""
         later = [m for m in meetings
                  if (m.id != a.meeting_id) and ((m.date or "") >= (src_date or ""))]
-        later = [m for m in later if m.id != a.meeting_id]
         if not later:
+            # no later meetings, but a passed ISO deadline still flips it to overdue
+            if _is_overdue(a.deadline, today) and a.status != "quá hạn":
+                db.update_action_status(a.id, "quá hạn")
+                results.append({"action_id": a.id, "task": a.task, "status": "quá hạn",
+                                "note": f"Quá hạn (hạn {a.deadline}), chưa thấy nhắc lại."})
             continue
-        later_ctx = "\n".join(f"[meeting_id={m.id}] {m.title} ({m.date}): {m.summary}" for m in later)
+        later_ctx = "\n".join(_later_meeting_block(m, a.task) for m in later)
         try:
             v = _chat_json(_followup_prompt(a.task, a.owner or "", a.deadline or "", later_ctx),
                            (config.REASONING_MODEL, config.REASONING_FALLBACK_MODEL))
         except ValueError:
             continue
         new_status = v.get("status")
+        # deterministic overdue overrides the model UNLESS it found the task done
+        if new_status != "xong" and _is_overdue(a.deadline, today):
+            new_status = "quá hạn"
         if new_status and new_status != a.status:
             db.update_action_status(a.id, new_status)
         rel = v.get("related_meeting_id")
-        if rel:
+        if rel and rel in by_id:                # ignore hallucinated meeting ids
             db.add_action_link(a.id, rel, v.get("note", ""))
         results.append({"action_id": a.id, "task": a.task, "status": new_status or a.status,
                         "note": v.get("note", "")})
     return results
+
+
+def notify_actions(to: list[str] | None = None, refresh: bool = True) -> dict:
+    """Email a todo/action reminder. Optionally re-check statuses (follow_up) first.
+
+    Returns a summary with `sent` and a `reason` so callers can tell apart
+    "nothing open" from "email disabled/failed".
+    """
+    if refresh:
+        follow_up()                                   # flip "quá hạn", mark "xong"
+    actions = db.all_actions()
+    titles = {m.id: m.title for m in db.list_meetings(limit=10000)}
+    open_items = [a for a in actions if a.status != "xong"]
+    sent = mailer.send_action_digest(actions, meeting_titles=titles, to=to)
+    reason = ("no_open_items" if not open_items
+              else "sent" if sent else "email_disabled")
+    return {"sent": sent, "open_items": len(open_items),
+            "overdue": sum(1 for a in open_items if a.status == "quá hạn"),
+            "reason": reason}
+
+
+def assign_action(action_id: int, owner: str, email: str | None = None,
+                  notify: bool = True, note: str | None = None) -> dict:
+    """Set an action's owner and (optionally) email that owner a notification.
+
+    Returns {assigned, owner, sent, reason}. `reason` is one of:
+    not_found, no_notify, no_email, sent, email_disabled.
+    """
+    if not db.update_action_owner(action_id, owner):
+        return {"assigned": False, "reason": "not_found"}
+    sent, reason = False, "no_notify"
+    if notify and email:
+        a = db.get_action(action_id)
+        m = db.get_meeting(a.meeting_id) if a else None
+        sent = mailer.send_assignment(a, email, note=note,
+                                      meeting_title=m.title if m else None)
+        reason = "sent" if sent else "email_disabled"
+    elif notify:
+        reason = "no_email"
+    return {"assigned": True, "owner": owner, "sent": sent, "reason": reason}

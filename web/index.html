@@ -7,13 +7,13 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="./styles.css?v=20260615-claude-redesign">
+    <link rel="stylesheet" href="./styles.css?v=20260616-ingest-progress-live">
   </head>
   <body>
     <div id="app" class="app-shell">
       <header class="topbar">
         <div class="brand">
-          <span class="brand-orbit"><img class="brand-mark" src="./assets/mnemosyne-logo.png" alt="" aria-hidden="true"></span>
+          <span class="brand-orbit"><img class="brand-mark" src="./assets/mnemosyne-logo.png?v=20260616-logo" alt="" aria-hidden="true"></span>
           <div>
             <strong>Memoir</strong>
             <small>Decision Memory</small>
@@ -23,6 +23,13 @@
           <span>Search</span>
           <input id="globalSearch" type="search" placeholder="Search decisions, contradictions, owners, evidence...">
         </label>
+        <div class="export-menu" id="exportMenu">
+          <button id="exportBtn" class="primary-btn new-btn export-trigger" type="button" aria-haspopup="true" aria-expanded="false" disabled><span>↧</span> Export <small class="caret">▾</small></button>
+          <div class="export-dropdown" id="exportDropdown" role="menu" hidden>
+            <button class="export-option" type="button" role="menuitem" data-export="docx">Word (.docx)</button>
+            <button class="export-option" type="button" role="menuitem" data-export="pdf">PDF (.pdf)</button>
+          </div>
+        </div>
         <button id="newMeetingBtn" class="primary-btn new-btn" type="button"><span>+</span> New meeting</button>
       </header>
 
@@ -51,30 +58,45 @@
               <b id="termCount">0 terms</b>
             </button>
             <div id="glossaryPanel" class="glossary-panel">
-              <form id="glossaryForm" class="inline-form">
-                <input id="termInput" class="input" type="text" placeholder="Canonical term">
-                <input id="wrongInput" class="input" type="text" placeholder="Misheard as">
-                <button class="small-btn" type="submit">Add</button>
-              </form>
-              <form id="guideForm" class="guide-drop">
-                <input id="guideFile" type="file" accept=".txt,.md,.docx">
-                <button class="small-btn" type="submit">Learn guide</button>
-              </form>
+              <div id="termEditorPanel" class="term-editor-panel" hidden>
+                <div class="term-toolbar" aria-label="Terminology editor">
+                  <button id="editTermsBtn" class="term-editor-btn" type="button">Edit</button>
+                  <button id="cancelTermsBtn" class="term-editor-btn" type="button" hidden>Cancel</button>
+                  <button id="saveTermsBtn" class="term-editor-btn" type="button" hidden>Save</button>
+                </div>
+                <div id="termEditList" class="term-edit-list" hidden></div>
+                <div id="termAddRow" class="term-add" hidden>
+                  <input id="newTermInput" type="text" placeholder="Add terminology" aria-label="Add terminology">
+                  <button id="addTermBtn" class="term-editor-btn" type="button">Add</button>
+                </div>
+              </div>
               <div id="glossaryList" class="term-list"></div>
-              <div id="suggestedTerms" class="suggested-terms"></div>
             </div>
           </section>
-          <div class="connection-dot"><span></span>API connected through FastAPI</div>
+          <div class="memoir-signature"><em>Remembered by Memoir</em></div>
         </aside>
 
         <section class="content stage">
           <div class="content-head meeting-head">
             <div class="meta-row eyebrow" id="activeMeta">No meeting selected</div>
-            <input id="activeTitleInput" class="active-title-input" type="text" value="Memoir" aria-label="Edit meeting name">
-            <p id="activeSummary" class="summary">Load meetings or ingest a transcript to start building decision memory.</p>
+            <textarea id="activeTitleInput" class="active-title-input" rows="1" aria-label="Edit meeting name">Memoir</textarea>
+            <div class="signals memory-hero">
+              <article class="radar-card signal-card red accent">
+                <strong id="decisionDriftCount">0</strong>
+                <span>Decision Drift</span>
+              </article>
+              <article class="radar-card signal-card green">
+                <strong id="contradictionCount">0</strong>
+                <span>Contradiction Radar</span>
+              </article>
+              <article class="radar-card signal-card gold">
+                <strong id="openActionCount">0</strong>
+                <span>Action Memory</span>
+              </article>
+            </div>
             <div class="tabs" role="tablist">
-              <a id="tabDigest" class="tab active" href="#digestView" data-tab="digest" onclick="switchTab('digest')">Executive Brief</a>
-              <a id="tabMemory" class="tab" href="#memoryView" data-tab="memory" onclick="switchTab('memory')">Memory Ops</a>
+              <a id="tabDigest" class="tab active" href="#digestView" data-tab="digest" onclick="switchTab('digest')">Summary</a>
+              <a id="tabMemory" class="tab" href="#memoryView" data-tab="memory" onclick="switchTab('memory')">Actions</a>
               <a id="tabTranscript" class="tab" href="#transcriptView" data-tab="transcript" onclick="switchTab('transcript')">Evidence Lab</a>
             </div>
           </div>
@@ -82,38 +104,22 @@
           <div class="stage-body">
             <div class="stage-scroll">
               <section id="digestView" class="view scroll active">
-                <div class="signals memory-hero">
-                  <article class="radar-card signal-card red accent">
-                    <span>Decision Drift</span>
-                    <strong id="decisionDriftCount">0</strong>
-                    <small>Decisions or facts that changed across meeting history</small>
-                  </article>
-                  <article class="radar-card signal-card green">
-                    <span>Contradiction Radar</span>
-                    <strong id="contradictionCount">0</strong>
-                    <small>Conflicting claims detected before someone asks</small>
-                  </article>
-                  <article class="radar-card signal-card gold">
-                    <span>Action Memory</span>
-                    <strong id="openActionCount">0</strong>
-                    <small>Open commitments and owner debt still being tracked</small>
-                  </article>
-                </div>
-
-                <div class="toolbar">
-                  <button id="digestBtn" class="small-btn" type="button">Generate executive brief</button>
-                  <button id="followupBtn" class="small-btn" type="button">Refresh follow-up</button>
+                <div id="activeSummary" class="summary digest-summary">Load meetings or ingest a transcript to start building decision memory.</div>
+                <div class="toolbar executive-nav">
+                  <button class="section-jump-btn" type="button" data-scroll-target="decisionsCard">Decisions</button>
+                  <button class="section-jump-btn" type="button" data-scroll-target="contradictionsCard">Contradictions</button>
+                  <button class="section-jump-btn" type="button" data-scroll-target="risksCard">Risks &amp; Blockers</button>
                 </div>
                 <div class="executive-grid brief-grid">
-                  <article class="brief-card scroll-card">
+                  <article id="decisionsCard" class="brief-card scroll-card">
                     <h2>Decisions</h2>
                     <ul id="decisions"></ul>
                   </article>
-                  <article class="brief-card scroll-card alert">
-                    <h2>Contradictions &amp; Forgotten Decisions</h2>
+                  <article id="contradictionsCard" class="brief-card scroll-card">
+                    <h2>Contradictions</h2>
                     <ul id="contradictionsForgotten"></ul>
                   </article>
-                  <article class="brief-card scroll-card wide">
+                  <article id="risksCard" class="brief-card scroll-card wide">
                     <h2>Risks &amp; Blockers</h2>
                     <ul id="risks"></ul>
                   </article>
@@ -159,18 +165,21 @@
           </div>
         </section>
 
-        <aside class="chat qa">
+        <aside class="chat qa claude-qa">
           <div class="chat-head qa-head">
-            <div>
-              <span>Evidence Q&amp;A</span>
-              <small id="chatScope">Ask across memory, not one transcript</small>
+            <div class="qa-title-row">
+              <img class="qa-agent-logo" src="./assets/mnemosyne-logo.png?v=20260616-logo" alt="" aria-hidden="true">
+              <div>
+                <strong class="qa-title-main">Ask Memoir</strong>
+                <strong id="chatScope" class="qa-scope-line">Ask across memory, not one transcript</strong>
+              </div>
             </div>
           </div>
           <div id="chatMessages" class="chat-messages messages scroll"></div>
-          <div id="suggestions" class="suggestions"></div>
-          <form id="chatForm" class="chat-form askbar">
+          <div id="suggestions" class="suggestions quick-prompts"></div>
+          <form id="chatForm" class="chat-form askbar qa-composer">
             <textarea id="chatInput" rows="1" placeholder="Ask which decision changed, who owns it, and what evidence supports it..."></textarea>
-            <button class="primary-btn icon-btn" type="submit">Ask</button>
+            <button class="primary-btn icon-btn" type="submit" aria-label="Ask Memoir"><span aria-hidden="true">↗</span></button>
           </form>
         </aside>
       </main>
@@ -182,24 +191,31 @@
               <h2>New meeting</h2>
               <p>Paste a transcript or upload audio/video. Memoir will extract memory, decisions, conflicts and commitments.</p>
             </div>
-            <button id="closeImportBtn" class="ghost-btn" type="button">Close</button>
+            <button id="closeImportBtn" class="dialog-close-btn" type="button" aria-label="Close import dialog">x</button>
           </div>
           <div class="form-grid">
             <label>Title<input id="ingestTitle" class="input" type="text" placeholder="Weekly product sync"></label>
-            <label>Date<input id="ingestDate" class="input" type="date"></label>
+            <label>Date<input id="ingestDate" class="input" type="datetime-local" step="1"></label>
           </div>
-          <textarea id="ingestText" class="transcript-editor compact" placeholder="Paste transcript here"></textarea>
-          <label class="file-box">
+          <label class="ingest-mode-row">Input type
+            <select id="ingestMode" class="input">
+              <option value="upload">Upload audio</option>
+              <option value="recording">Recording</option>
+              <option value="transcript">Paste transcript</option>
+            </select>
+          </label>
+          <div class="ingest-source-box ingest-panel" data-ingest-panel="transcript" hidden>
+            <textarea id="ingestText" class="transcript-editor compact" placeholder="Paste transcript here"></textarea>
+          </div>
+          <label class="ingest-source-box file-box ingest-panel" data-ingest-panel="upload">
             <input id="ingestFile" type="file" accept=".wav,.mp3,.m4a,.mp4,.webm,.aiff,.ogg,.txt,.md">
             <span id="ingestFileLabel">Optional audio/video upload</span>
           </label>
-          <div class="record-box">
-            <span class="record-label">Hoặc ghi trực tiếp cuộc họp của bạn</span>
+          <div class="ingest-source-box record-box ingest-panel" data-ingest-panel="recording" hidden>
             <div class="record-actions">
-              <button type="button" id="recordTabBtn" class="ghost-btn">🔴 Ghi tab/màn hình (tiếng họp)</button>
-              <button type="button" id="recordMicBtn" class="ghost-btn">🎙 Ghi mic</button>
-              <button type="button" id="recordStopBtn" class="primary-btn" hidden>⏹ Dừng &amp; lưu</button>
-              <span id="recordStatus" class="record-status"></span>
+              <button type="button" id="recordMicBtn" class="ghost-btn record-action-btn">Record mic</button>
+              <button type="button" id="recordStopBtn" class="primary-btn" hidden>Stop and save</button>
+              <span id="recordStatus" class="record-status">Ready to record from microphone.</span>
             </div>
           </div>
           <div id="filePreview" class="file-preview" hidden>
@@ -208,6 +224,10 @@
             <video id="videoPreview" controls preload="metadata" playsinline hidden></video>
           </div>
           <p id="uploadStatus" class="upload-status" role="status" aria-live="polite"></p>
+          <div id="ingestProgress" class="ingest-progress" aria-label="Ingest progress" hidden>
+            <span id="ingestProgressPercent">0%</span>
+            <span class="ingest-progress-track" aria-hidden="true"><span id="ingestProgressFill" class="ingest-progress-fill"></span></span>
+          </div>
           <label class="check-row"><input id="extractAudio" type="checkbox" checked> Extract audio with ffmpeg when needed</label>
           <div class="dialog-actions">
             <button class="ghost-btn" type="button" id="cancelIngestBtn">Cancel</button>
@@ -241,6 +261,6 @@
         window.dispatchEvent(new HashChangeEvent("hashchange"));
       }
     </script>
-    <script src="./app.js?v=20260615-claude-redesign" defer></script>
+    <script src="./app.js?v=20260616-ingest-progress-live" defer></script>
   </body>
 </html>

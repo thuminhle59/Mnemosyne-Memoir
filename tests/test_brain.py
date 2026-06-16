@@ -30,6 +30,18 @@ def test_extract_facts_returns_empty_on_bad_json(monkeypatch):
     assert brain.extract_facts(_report(), "t") == []
 
 
+def test_extract_facts_dedupes_within_meeting(monkeypatch):
+    """Identical claims (case/whitespace-insensitive) collapse to one fact."""
+    payload = {"facts": [
+        {"type": "số liệu", "subject": "ngân sách", "statement": "500tr", "quote": "a"},
+        {"type": "số liệu", "subject": "Ngân Sách", "statement": " 500TR ", "quote": "b"},  # dup
+        {"type": "quyết định", "subject": "ngày launch", "statement": "30/6", "quote": "c"},
+    ]}
+    monkeypatch.setattr(brain.llm, "chat", lambda prompt, model, **k: json.dumps(payload))
+    facts = brain.extract_facts(_report(), "transcript")
+    assert [(f.subject, f.statement) for f in facts] == [("ngân sách", "500tr"), ("ngày launch", "30/6")]
+
+
 # ---------------------------------------------------------------- ingest
 
 def test_ingest_saves_meeting_facts_and_runs_contradiction(monkeypatch):
@@ -86,8 +98,9 @@ def test_ingest_detects_contradiction_across_meetings(monkeypatch):
             subj_stmt = ("15/7" if "15/7" in prompt else "30/6")
             return json.dumps({"facts": [{"type": "quyết định", "subject": "ngày launch",
                                           "statement": subj_stmt, "quote": ""}]})
-        # contradiction verdict prompt
-        return json.dumps({"contradicts": True, "explanation": "30/6 vs 15/7", "severity": "cao"})
+        # batched contradiction verdict prompt (one candidate -> index 0)
+        return json.dumps({"conflicts": [
+            {"index": 0, "explanation": "30/6 vs 15/7", "severity": "cao"}]})
 
     monkeypatch.setattr(brain.llm, "chat", chat_router)
 
@@ -114,7 +127,8 @@ def test_detect_forgotten_decision_resurfaced(monkeypatch):
                        statement="Đề xuất làm lại tính năng X", source_meeting_id=m2)
     db.save_facts(m2, [nf])
     monkeypatch.setattr(brain.llm, "chat", lambda prompt, model, **k: json.dumps(
-        {"resurfaced": True, "kind": "rejected", "explanation": "X từng bị bác, nay nhắc lại"}))
+        {"resurfaced": True, "index": 0, "kind": "rejected",
+         "explanation": "X từng bị bác, nay nhắc lại"}))
     found = brain.detect_forgotten_decisions([nf])
     assert len(found) == 1 and found[0]["kind"] == "rejected"
     assert db.counts()["resurfaced"] == 1
@@ -251,6 +265,46 @@ def test_ask_empty_memory_returns_message():
     assert "Chưa có cuộc họp" in ans.text
 
 
+def _seed_contradiction():
+    from models import Contradiction
+    mid = db.save_meeting(_report(title="Họp launch", date="2026-06-02", transcript="t"))
+    fids = db.save_facts(mid, [
+        KnowledgeFact(type="quyết định", subject="ngày launch", statement="30/6", quote="chốt 30/6"),
+        KnowledgeFact(type="quyết định", subject="ngày launch", statement="15/7", quote="dời 15/7"),
+    ])
+    db.save_contradiction(Contradiction(subject="ngày launch", explanation="30/6 đổi sang 15/7",
+                                        severity="cao", fact_a_id=fids[0], fact_b_id=fids[1]))
+
+
+def test_ask_injects_relevant_contradiction_into_context(monkeypatch):
+    _seed_contradiction()
+    seen = {}
+
+    def capture(prompt, model, **k):
+        seen["prompt"] = prompt
+        return json.dumps({"answer": "Ban đầu 30/6, sau dời 15/7.", "citations": []})
+
+    monkeypatch.setattr(brain.llm, "chat", capture)
+    brain.ask("ngày launch chốt khi nào?")
+    assert "### ⚠ MÂU THUẪN ĐÃ GHI NHẬN" in seen["prompt"]   # the injected block, not the rule
+    assert "30/6" in seen["prompt"] and "15/7" in seen["prompt"]
+
+
+def test_ask_omits_contradiction_block_when_unrelated(monkeypatch):
+    _seed_contradiction()
+    db.save_facts(db.save_meeting(_report(title="Họp NS", date="2026-06-03", transcript="t2")),
+                  [KnowledgeFact(type="số liệu", subject="ngân sách", statement="500tr")])
+    seen = {}
+
+    def capture(prompt, model, **k):
+        seen["prompt"] = prompt
+        return json.dumps({"answer": "500tr.", "citations": []})
+
+    monkeypatch.setattr(brain.llm, "chat", capture)
+    brain.ask("ngân sách bao nhiêu?")   # unrelated to the launch-date contradiction
+    assert "### ⚠ MÂU THUẪN ĐÃ GHI NHẬN" not in seen["prompt"]
+
+
 # ---------------------------------------------------------------- digest
 
 def test_digest_builds_report_with_open_actions(monkeypatch):
@@ -282,3 +336,161 @@ def test_follow_up_updates_status_and_links(monkeypatch):
     # status persisted
     action = db.all_actions()[0]
     assert action.status == "xong"
+
+
+# ---------------------------------------------------------------- quality: contradictions
+
+def test_detect_contradictions_skips_speculative_types(monkeypatch):
+    """Assumptions/risks must not trigger contradiction detection (no LLM call)."""
+    m1 = db.save_meeting(_report(title="Họp 1", date="2026-06-01", transcript="t1"))
+    db.save_facts(m1, [KnowledgeFact(type="số liệu", subject="ngân sách", statement="500tr")])
+    m2 = db.save_meeting(_report(title="Họp 2", date="2026-06-08", transcript="t2"))
+    nf = KnowledgeFact(type="giả định", subject="ngân sách",
+                       statement="có thể lên 1 tỷ", source_meeting_id=m2)
+    db.save_facts(m2, [nf])
+
+    def boom(prompt, model, **k):
+        raise AssertionError("LLM must not be called for a speculative fact")
+
+    monkeypatch.setattr(brain.llm, "chat", boom)
+    assert brain.detect_contradictions([nf]) == []
+    assert db.counts()["contradictions"] == 0
+
+
+def test_ingest_skips_contradiction_for_different_pilot_milestones(monkeypatch):
+    """Selecting merchants for a pilot and running the pilot are different milestones,
+    so their dates should not be surfaced as a contradiction."""
+    monkeypatch.setattr(brain.analyze, "analyze",
+                        lambda transcript, date: _report(date=date, transcript=transcript))
+
+    def fake_extract(_report_obj, transcript):
+        if "1/6" in transcript:
+            return [KnowledgeFact(type="số liệu", subject="ngày pilot Merchant",
+                                  statement="Ngày pilot Merchant là 1/6/2026")]
+        return [KnowledgeFact(type="số liệu", subject="ngày chọn merchant pilot",
+                              statement="Ngày chọn merchant pilot là 15/5/2026")]
+
+    def fake_chat(prompt, model, **k):
+        return json.dumps({"conflicts": [
+            {"index": 0,
+             "explanation": "Trước: ngày pilot Merchant là 1/6/2026 → Nay: ngày chọn merchant pilot là 15/5/2026",
+             "severity": "trung bình"}
+        ]})
+
+    monkeypatch.setattr(brain, "extract_facts", fake_extract)
+    monkeypatch.setattr(brain.llm, "chat", fake_chat)
+
+    brain.ingest(text="Chốt ngày pilot Merchant là 1/6/2026", date="2026-05-01", title="Kế hoạch pilot")
+    out = brain.ingest(text="Ngày chọn merchant pilot là 15/5/2026", date="2026-05-10", title="Chuẩn bị pilot")
+
+    assert out["contradictions"] == []
+    assert db.counts()["contradictions"] == 0
+
+
+def test_detect_contradictions_dedupes_one_row_per_new_fact(monkeypatch):
+    """A new value conflicting with several prior values of the same subject yields
+    ONE surfaced contradiction, but supersedes every prior value."""
+    m1 = db.save_meeting(_report(title="H1", date="2026-06-01", transcript="t1"))
+    db.save_facts(m1, [KnowledgeFact(type="quyết định", subject="ngày launch", statement="30/6")])
+    m2 = db.save_meeting(_report(title="H2", date="2026-06-05", transcript="t2"))
+    db.save_facts(m2, [KnowledgeFact(type="quyết định", subject="ngày launch", statement="12/7")])
+    m3 = db.save_meeting(_report(title="H3", date="2026-06-10", transcript="t3"))
+    nf = KnowledgeFact(type="quyết định", subject="ngày launch", statement="18/7", source_meeting_id=m3)
+    db.save_facts(m3, [nf])
+
+    # one batched call lists both prior values -> both indices conflict
+    monkeypatch.setattr(brain.llm, "chat", lambda prompt, model, **k: json.dumps(
+        {"conflicts": [
+            {"index": 0, "explanation": "đổi ngày launch", "severity": "trung bình"},
+            {"index": 1, "explanation": "đổi ngày launch", "severity": "trung bình"}]}))
+    found = brain.detect_contradictions([nf])
+    assert len(found) == 1                       # one surfaced row, not two
+    assert db.counts()["contradictions"] == 1
+    # both prior values superseded; only the new value stays active
+    actives = db.facts_by_subject("ngày launch", status="hiệu lực")
+    assert [f.statement for f in actives] == ["18/7"]
+
+
+def test_detect_contradictions_is_one_call_per_new_fact(monkeypatch):
+    """Batching: 1 new fact with N same-subject candidates => exactly ONE LLM call
+    (not N). Guards against regressing to per-pair calls."""
+    m1 = db.save_meeting(_report(title="H1", date="2026-06-01", transcript="t1"))
+    db.save_facts(m1, [KnowledgeFact(type="số liệu", subject="ngân sách", statement="100tr")])
+    m2 = db.save_meeting(_report(title="H2", date="2026-06-03", transcript="t2"))
+    db.save_facts(m2, [KnowledgeFact(type="số liệu", subject="ngân sách", statement="200tr")])
+    m3 = db.save_meeting(_report(title="H3", date="2026-06-05", transcript="t3"))
+    db.save_facts(m3, [KnowledgeFact(type="số liệu", subject="ngân sách", statement="300tr")])
+    m4 = db.save_meeting(_report(title="H4", date="2026-06-10", transcript="t4"))
+    nf = KnowledgeFact(type="số liệu", subject="ngân sách", statement="999tr", source_meeting_id=m4)
+    db.save_facts(m4, [nf])
+
+    calls = {"n": 0}
+
+    def counting_chat(prompt, model, **k):
+        calls["n"] += 1
+        return json.dumps({"conflicts": []})   # no conflict, just count the call
+
+    monkeypatch.setattr(brain.llm, "chat", counting_chat)
+    brain.detect_contradictions([nf])
+    assert calls["n"] == 1                        # 3 candidates, still one batched call
+
+
+# ---------------------------------------------------------------- quality: follow_up overdue
+
+def test_follow_up_marks_overdue_when_deadline_passed():
+    """A past ISO deadline with no later meeting flips the action to 'quá hạn' (no LLM)."""
+    db.save_meeting(_report(title="Họp 1", date="2026-06-01",
+                            actions=[ActionItem(task="Nộp báo cáo", deadline="2026-06-05")],
+                            transcript="t1"))
+    res = brain.follow_up()   # today (2026-06-15) > 2026-06-05
+    assert res and res[0]["status"] == "quá hạn"
+    assert db.all_actions()[0].status == "quá hạn"
+
+
+def test_follow_up_overdue_overrides_model(monkeypatch):
+    db.save_meeting(_report(title="Họp 1", date="2026-06-01",
+                            actions=[ActionItem(task="Viết spec", deadline="2026-06-05")],
+                            transcript="t1"))
+    db.save_meeting(_report(title="Họp 2", date="2026-06-08", summary="bàn việc khác",
+                            transcript="t2"))
+    monkeypatch.setattr(brain.llm, "chat", lambda prompt, model, **k: json.dumps(
+        {"status": "mở", "note": "chưa nhắc lại", "related_meeting_id": None}))
+    res = brain.follow_up()
+    assert res[0]["status"] == "quá hạn"   # deterministic overdue beats the model's "mở"
+
+
+def test_follow_up_ignores_hallucinated_related_meeting(monkeypatch):
+    db.save_meeting(_report(title="Họp 1", date="2026-06-01",
+                            actions=[ActionItem(task="Viết spec")], transcript="t1"))
+    db.save_meeting(_report(title="Họp 2", date="2026-06-08", transcript="t2"))
+    monkeypatch.setattr(brain.llm, "chat", lambda prompt, model, **k: json.dumps(
+        {"status": "đang làm", "note": "n", "related_meeting_id": 9999}))
+    brain.follow_up()
+    with db.SessionLocal() as s:
+        assert s.scalar(db.select(db.func.count(db.ActionLink.id))) == 0
+
+
+# ---------------------------------------------------------------- quality: Q&A citations
+
+def test_ask_drops_invalid_and_duplicate_citations(monkeypatch):
+    mid = db.save_meeting(_report(title="Họp ngân sách", date="2026-06-01", transcript="t"))
+    db.save_facts(mid, [KnowledgeFact(type="số liệu", subject="ngân sách", statement="500tr")])
+    monkeypatch.setattr(brain.llm, "chat", lambda prompt, model, **k: json.dumps({
+        "answer": "500tr.",
+        "citations": [
+            {"meeting_id": mid, "quote": "ngân sách 500tr"},
+            {"meeting_id": 9999, "quote": "ảo"},                 # invalid id -> dropped
+            {"meeting_id": mid, "quote": "ngân sách 500tr"},     # duplicate -> dropped
+        ],
+    }))
+    ans = brain.ask("ngân sách bao nhiêu")
+    assert len(ans.citations) == 1
+    assert ans.citations[0].meeting_id == mid
+
+
+def test_ask_empty_answer_falls_back(monkeypatch):
+    db.save_meeting(_report(title="Họp", date="2026-06-01", transcript="t"))
+    monkeypatch.setattr(brain.llm, "chat", lambda prompt, model, **k: json.dumps(
+        {"answer": "  ", "citations": []}))
+    ans = brain.ask("câu hỏi gì đó")
+    assert "Chưa từng được đề cập" in ans.text

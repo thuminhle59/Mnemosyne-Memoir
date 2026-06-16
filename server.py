@@ -15,10 +15,11 @@ import re
 import shutil
 import time
 import uuid
+from urllib.parse import quote
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
@@ -165,7 +166,11 @@ def _suggest_glossary_terms(m, limit: int = 12) -> list[dict]:
             counts[term] = counts.get(term, 0) + 1
     ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0].lower()))
     return [
-        {"term": term, "reason": f"Seen {count} time{'s' if count != 1 else ''} in meeting evidence"}
+        {
+            "term": term,
+            "count": count,
+            "reason": f"Seen {count} time{'s' if count != 1 else ''} in meeting evidence",
+        }
         for term, count in ranked[:limit]
     ]
 
@@ -324,6 +329,36 @@ def meeting_audio(meeting_id: int):
     return FileResponse(path, media_type="audio/mpeg")
 
 
+_REPORT_MEDIA = {
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "pdf": "application/pdf",
+}
+
+
+@app.get("/api/meetings/{meeting_id}/report.{fmt}")
+def meeting_report(meeting_id: int, fmt: str):
+    """Export a meeting's executive report as .docx or .pdf for download."""
+    fmt = fmt.lower()
+    if fmt not in _REPORT_MEDIA:
+        raise HTTPException(400, "format must be docx or pdf")
+    m = db.get_meeting(meeting_id)
+    if not m:
+        raise HTTPException(404, "meeting not found")
+    rep = m.report()
+    try:
+        data = report_mod.render_docx(rep) if fmt == "docx" else report_mod.render_pdf(rep)
+    except Exception as exc:  # weasyprint native libs may be missing for pdf
+        raise HTTPException(503, f"{fmt} export unavailable: {exc}")
+    fname = report_mod.filename(rep, fmt)
+    ascii_name = fname.encode("ascii", "ignore").decode("ascii") or f"meeting_{meeting_id}.{fmt}"
+    quoted = quote(fname)
+    return Response(
+        content=data,
+        media_type=_REPORT_MEDIA[fmt],
+        headers={"Content-Disposition": f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quoted}"},
+    )
+
+
 @app.get("/api/actions")
 def actions(status: str | None = None):
     return [_action_detail(a) for a in db.all_actions(status=status)]
@@ -337,6 +372,24 @@ def update_action(action_id: int, body: ActionStatusBody):
     if not db.update_action_status(action_id, status):
         raise HTTPException(404, "Action not found")
     return {"id": action_id, "status": status}
+
+
+class AssignBody(BaseModel):
+    owner: str
+    email: str | None = None      # recipient typed at assign time; sent to once
+    notify: bool = True
+    note: str | None = None
+
+
+@app.post("/api/actions/{action_id}/assign")
+def assign_action(action_id: int, body: AssignBody):
+    if not body.owner.strip():
+        raise HTTPException(400, "owner is required")
+    res = brain.assign_action(action_id, body.owner.strip(), email=body.email,
+                              notify=body.notify, note=body.note)
+    if not res.get("assigned"):
+        raise HTTPException(404, "Action not found")
+    return res
 
 
 @app.get("/api/contradictions")
@@ -541,6 +594,22 @@ def scan_forgotten():
     return {"resurfaced": brain.scan_forgotten()}
 
 
+@app.post("/api/redetect_contradictions")
+def redetect_contradictions():
+    """Wipe all contradictions and re-run detection chronologically across all meetings."""
+    return brain.redetect_all_contradictions()
+
+
+class NotifyBody(BaseModel):
+    to: list[str] | None = None      # override recipients; None -> config.EMAIL_TO
+    refresh: bool = True             # run follow_up() to refresh statuses before sending
+
+
+@app.post("/api/notify/actions")
+def notify_actions(body: NotifyBody):
+    return brain.notify_actions(to=body.to, refresh=body.refresh)
+
+
 class GlossaryBody(BaseModel):
     term: str
     wrong: str | None = None
@@ -568,10 +637,42 @@ def delete_glossary(gid: int):
 
 # ----------------------------------------------------------------- static SPA
 
+def _frontend_bootstrap() -> dict:
+    meeting_rows = [_meeting_brief(m) for m in db.list_meetings(limit=1000)]
+    meeting_details = {}
+    if meeting_rows:
+        first = db.get_meeting(meeting_rows[0]["id"])
+        if first:
+            meeting_details[str(first.id)] = _meeting_detail(first)
+    return {
+        "config": frontend_config(),
+        "stats": stats(),
+        "meetings": meeting_rows,
+        "meeting_details": meeting_details,
+        "actions": actions(),
+        "contradictions": contradictions(),
+        "resurfaced": resurfaced(),
+        "glossary": glossary(),
+        "digest": None,
+    }
+
+
+@app.get("/", response_class=HTMLResponse)
+def frontend_index():
+    index_path = os.path.join(_WEB, "index.html")
+    if not os.path.exists(index_path):
+        return HTMLResponse("Memoir frontend not found", status_code=404)
+    with open(index_path, "r", encoding="utf-8") as fh:
+        html = fh.read()
+    payload = json.dumps(_frontend_bootstrap(), ensure_ascii=False).replace("</", "<\\/")
+    bootstrap = f'<script id="memoirBootstrap" type="application/json">{payload}</script>'
+    return html.replace("</head>", f"{bootstrap}\n  </head>")
+
+
 if os.path.isdir(_WEB):
     app.mount("/", StaticFiles(directory=_WEB, html=True), name="web")
 else:
-    @app.get("/")
+    @app.get("/api")
     def root():
         return JSONResponse({"service": "Memoir API",
                              "note": "frontend not built yet; see /docs for API"})

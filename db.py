@@ -267,7 +267,17 @@ def update_meeting_metadata(
         if not m:
             return False
         if title is not None:
-            m.title = title.strip() or m.title
+            new_title = title.strip() or m.title
+            m.title = new_title
+            # Keep the embedded report in sync so exports (which read report_json)
+            # use the renamed title, not the original ingest title.
+            if m.report_json:
+                try:
+                    rep = json.loads(m.report_json)
+                    rep["title"] = new_title
+                    m.report_json = json.dumps(rep, ensure_ascii=False)
+                except (ValueError, TypeError):
+                    pass
         if source_file is not None:
             m.source_file = source_file.strip() or m.source_file
         s.commit()
@@ -350,6 +360,21 @@ def update_action_status(action_id: int, status: str) -> bool:
         return False
 
 
+def update_action_owner(action_id: int, owner: str) -> bool:
+    with SessionLocal() as s:
+        row = s.get(Action, action_id)
+        if row:
+            row.owner = owner
+            s.commit()
+            return True
+        return False
+
+
+def get_action(action_id: int) -> Action | None:
+    with SessionLocal() as s:
+        return s.get(Action, action_id)
+
+
 def add_action_link(action_id: int, related_meeting_id: int, note: str = "") -> int:
     with SessionLocal() as s:
         row = ActionLink(action_id=action_id, related_meeting_id=related_meeting_id, note=note)
@@ -413,6 +438,26 @@ def all_contradictions() -> list[ContradictionRow]:
         return list(s.scalars(
             select(ContradictionRow).order_by(ContradictionRow.detected_at.desc())
         ))
+
+
+def clear_all_contradictions() -> int:
+    """Delete every contradiction row and reset all replaced facts back to hiệu lực.
+    Used before a full re-detection pass."""
+    with SessionLocal() as s:
+        rows = list(s.scalars(select(ContradictionRow)))
+        count = len(rows)
+        # Collect fact ids that were marked replaced so we can restore them.
+        replaced_ids = {r.fact_a_id for r in rows if r.fact_a_id}
+        for row in rows:
+            s.delete(row)
+        # Restore superseded facts so they participate in the new pass.
+        if replaced_ids:
+            facts = list(s.scalars(select(Fact).where(Fact.id.in_(replaced_ids))))
+            for f in facts:
+                if f.status == "đã thay thế":
+                    f.status = "hiệu lực"
+        s.commit()
+        return count
 
 
 def save_resurfaced(subject: str, kind: str, explanation: str,

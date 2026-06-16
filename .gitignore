@@ -37,3 +37,10 @@ build/
 
 # Local demo media (large, do not commit)
 demo-meetings/
+
+# Local design mockups / reversible UI drafts (keep locally, do not commit)
+web/backup-designs/
+web/*mockup.html
+web/upload-progress-mockup.html
+web/terminology-edit-mockup.html
+web/meeting-groups-mockup.html

@@ -5,6 +5,7 @@ One endpoint, routed by `action`:
   ask      {question}                                   -> recall Q&A with citations
   digest   {scope?}                                     -> executive digest (+ optional file)
   followup {}                                           -> re-check action statuses
+  notify_actions {to?, refresh?}                        -> email a todo/action reminder
 
 The AgentBase runtime also mounts the web dashboard/API, so the deployed endpoint
 serves both the agent contract and the browser frontend.
@@ -103,12 +104,19 @@ def _do_scan_forgotten(_payload: dict) -> dict:
     return {"status": "success", "resurfaced": brain.scan_forgotten()}
 
 
+def _do_notify_actions(payload: dict) -> dict:
+    res = brain.notify_actions(to=payload.get("to"),
+                               refresh=payload.get("refresh", True))
+    return {"status": "success", **res}
+
+
 _ROUTES = {
     "ingest": _do_ingest,
     "ask": _do_ask,
     "digest": _do_digest,
     "followup": _do_followup,
     "scan_forgotten": _do_scan_forgotten,
+    "notify_actions": _do_notify_actions,
 }
 
 

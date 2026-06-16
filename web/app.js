@@ -16,11 +16,13 @@ const API = {
   meetings: apiUrl("/api/meetings"),
   meeting: (id) => apiUrl(`/api/meetings/${id}`),
   audio: (id) => apiUrl(`/api/meetings/${id}/audio`),
+  report: (id, fmt) => apiUrl(`/api/meetings/${id}/report.${fmt}`),
   updateMeeting: (id) => apiUrl(`/api/meetings/${id}`),
   ask: apiUrl("/api/ask"),
   ingest: apiUrl("/api/ingest"),
   actions: apiUrl("/api/actions"),
   action: (id) => apiUrl(`/api/actions/${id}`),
+  assignAction: (id) => apiUrl(`/api/actions/${id}/assign`),
   contradictions: apiUrl("/api/contradictions"),
   resurfaced: apiUrl("/api/resurfaced"),
   digest: apiUrl("/api/digest"),
@@ -33,6 +35,18 @@ const API = {
   glossaryLearn: apiUrl("/api/glossary/learn"),
   glossaryItem: (id) => apiUrl(`/api/glossary/${id}`),
 };
+
+function readBootstrapData() {
+  const node = document.getElementById("memoirBootstrap");
+  if (!node?.textContent) return window.__MEMOIR_BOOTSTRAP__ || null;
+  try {
+    return JSON.parse(node.textContent);
+  } catch (_) {
+    return window.__MEMOIR_BOOTSTRAP__ || null;
+  }
+}
+
+const BOOTSTRAP_DATA = readBootstrapData();
 
 const MAX_UPLOAD_BYTES = 500 * 1024 * 1024;
 const DIRECT_UPLOAD_BYTES = 64 * 1024 * 1024;
@@ -54,6 +68,7 @@ const state = {
   actions: [],
   contradictions: [],
   resurfaced: [],
+  digest: null,
   glossary: [],
   glossarySuggestions: [],
   maxUploadBytes: MAX_UPLOAD_BYTES,
@@ -63,6 +78,8 @@ const state = {
   timeFilter: "all",
   sidebarCollapsed: false,
   glossaryCollapsed: true,
+  glossaryEditing: false,
+  glossaryDraft: [],
   transcriptSearch: "",
   previewUrl: null,
   recordedFile: null,
@@ -74,19 +91,68 @@ const state = {
   chat: [
     {
       role: "assistant",
-      text: "Mình đã sẵn sàng vận hành lớp trí nhớ quyết định. Hỏi về decision drift, mâu thuẫn, việc còn mở hoặc bằng chứng lịch sử; câu trả lời sẽ kèm nguồn khi backend có chứng cứ.",
+      text: "Mình đã đọc xong transcript cuộc họp này. Hỏi bất cứ điều gì",
       citations: [],
     },
   ],
 };
 
 const $ = (id) => document.getElementById(id);
+let meetingTitleClickTimer = null;
+
+function parseJsonText(text) {
+  if (!text) return null;
+  return JSON.parse(text);
+}
+
+function requestWithXhr(url, options = {}) {
+  return new Promise((resolve, reject) => {
+    if (typeof window.XMLHttpRequest !== "function") {
+      reject(new Error("Browser does not expose fetch or XMLHttpRequest"));
+      return;
+    }
+    const xhr = new XMLHttpRequest();
+    xhr.open(options.method || "GET", url, true);
+    Object.entries(options.headers || {}).forEach(([key, value]) => xhr.setRequestHeader(key, value));
+    if (typeof options.onUploadProgress === "function" && xhr.upload) {
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable && event.total > 0) {
+          options.onUploadProgress(event.loaded, event.total, event);
+        }
+      };
+    }
+    if (options.signal) {
+      if (options.signal.aborted) {
+        xhr.abort();
+        reject(new DOMException("The operation was aborted.", "AbortError"));
+        return;
+      }
+      options.signal.addEventListener("abort", () => xhr.abort(), { once: true });
+    }
+    xhr.onload = () => {
+      const response = {
+        ok: xhr.status >= 200 && xhr.status < 300,
+        status: xhr.status,
+        statusText: xhr.statusText,
+        json: async () => parseJsonText(xhr.responseText),
+      };
+      resolve(response);
+    };
+    xhr.onerror = () => reject(new Error("Network request failed"));
+    xhr.onabort = () => reject(new DOMException("The operation was aborted.", "AbortError"));
+    xhr.send(options.body || null);
+  });
+}
 
 async function request(url, options = {}) {
   let res;
   try {
-    res = await fetch(url, options);
+    const needsUploadProgress = typeof options.onUploadProgress === "function";
+    res = typeof window.fetch === "function" && !needsUploadProgress
+      ? await window.fetch(url, options)
+      : await requestWithXhr(url, options);
   } catch (error) {
+    if (error?.name === "AbortError") throw error;
     throw new Error(`Cannot reach Memoir API at ${API_ORIGIN || window.location.origin}. Make sure the server is running on http://127.0.0.1:8080.`);
   }
   if (!res.ok) {
@@ -100,6 +166,10 @@ async function request(url, options = {}) {
     throw new Error(message);
   }
   return res.json();
+}
+
+function bootstrapMeetingDetail(id) {
+  return BOOTSTRAP_DATA?.meeting_details?.[String(id)] || null;
 }
 
 function isPayloadTooLarge(error) {
@@ -132,15 +202,69 @@ function setUploadStatus(message) {
   if (status) status.textContent = message || "";
 }
 
+function setUploadProgress(percent, label, detail, variant = "") {
+  if (variant === "error") {
+    if ($("ingestProgress")?.hidden) showIngestProgress();
+    setIngestPercent(percent, "error");
+    setUploadStatus(detail || label || "Upload interrupted.");
+    return;
+  }
+  setIngestPercent(percent);
+  if (detail || label) setUploadStatus(detail || label);
+}
+
+function showIngestProgress() {
+  const box = $("ingestProgress");
+  if (!box) return;
+  box.hidden = false;
+  box.classList.remove("error");
+}
+
+function setIngestPercent(percent, variant = "") {
+  const box = $("ingestProgress");
+  if (!box) return;
+  showIngestProgress();
+  const value = Math.max(0, Math.min(100, Math.round(percent)));
+  box.classList.toggle("error", variant === "error");
+  const label = $("ingestProgressPercent");
+  const fill = $("ingestProgressFill");
+  if (label) label.textContent = `${value}%`;
+  if (fill) fill.style.width = `${value}%`;
+}
+
+function resetUploadProgress() {
+  setUploadStatus("");
+  const box = $("ingestProgress");
+  if (box) {
+    box.hidden = true;
+    box.classList.remove("error");
+    const label = $("ingestProgressPercent");
+    const fill = $("ingestProgressFill");
+    if (label) label.textContent = "0%";
+    if (fill) fill.style.width = "0%";
+  }
+}
+
+function hasSelectedIngestFile() {
+  const mode = $("ingestMode").value;
+  if (mode === "recording") return Boolean(state.recordedFile);
+  if (mode === "upload") return Boolean($("ingestFile").files[0]);
+  return false;
+}
+
 function setIngestBusy(isBusy) {
   const submit = $("ingestSubmitBtn");
   const cancel = $("cancelIngestBtn");
   const close = $("closeImportBtn");
   if (submit) {
     submit.disabled = isBusy;
-    submit.textContent = isBusy ? "Uploading..." : "Ingest";
+    submit.textContent = isBusy ? "Đang xử lý..." : "Ingest";
   }
-  if (cancel) cancel.disabled = isBusy;
+  // Keep Cancel clickable while busy so the user can abort the in-flight ingest.
+  if (cancel) {
+    cancel.disabled = false;
+    cancel.textContent = isBusy ? "Hủy ingest" : "Cancel";
+  }
   if (close) close.disabled = isBusy;
 }
 
@@ -194,6 +318,26 @@ function updateFilePreview(file) {
   preview.hidden = false;
 }
 
+function clearSelectedUploadFile() {
+  const input = $("ingestFile");
+  if (input) input.value = "";
+  const label = $("ingestFileLabel");
+  if (label) label.textContent = "Optional audio/video upload";
+  clearFilePreview();
+}
+
+function setIngestMode(mode) {
+  document.querySelectorAll("[data-ingest-panel]").forEach((panel) => {
+    panel.hidden = panel.dataset.ingestPanel !== mode;
+  });
+  setUploadStatus("");
+  resetUploadProgress();
+  if (mode !== "transcript") $("ingestText").value = "";
+  if (mode !== "upload") clearSelectedUploadFile();
+  if (mode !== "recording") resetRecording();
+  if (mode === "recording") refreshRecordingSupport();
+}
+
 function fmtDate(value) {
   return value || "no date";
 }
@@ -203,6 +347,82 @@ function fmtDuration(seconds) {
   const mm = Math.floor(seconds / 60);
   const ss = String(seconds % 60).padStart(2, "0");
   return `${mm}:${ss}`;
+}
+
+function stripExtension(value = "") {
+  return value.replace(/\.[a-z0-9]{2,5}$/i, "");
+}
+
+function deriveMeetingGroup(meeting = {}) {
+  const base = stripExtension(meeting.title || meeting.source_file || "").trim();
+  if (!base) return "Ungrouped";
+  const split = base.split(/\s[-–—]\s|\/|:|\|/).map((part) => part.trim()).filter(Boolean);
+  if (split.length > 1) return split[0];
+  const cleaned = base.replace(/^\d{4}[-_]\d{2}[-_]\d{2}[\s_-]*/i, "").trim();
+  return cleaned || base;
+}
+
+function groupMeetingsForSidebar(meetings) {
+  const groups = new Map();
+  meetings.forEach((meeting) => {
+    const group = deriveMeetingGroup(meeting);
+    if (!groups.has(group)) groups.set(group, []);
+    groups.get(group).push(meeting);
+  });
+  return [...groups.entries()];
+}
+
+function formatDateTimeSeconds(value) {
+  if (!value) return "no date";
+  const raw = String(value);
+  const simple = raw.match(/^(\d{4}-\d{2}-\d{2})$/);
+  if (simple) return `${simple[1]} 00:00:00`;
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return fmtDate(raw);
+  const yyyy = parsed.getFullYear();
+  const mm = String(parsed.getMonth() + 1).padStart(2, "0");
+  const dd = String(parsed.getDate()).padStart(2, "0");
+  const hh = String(parsed.getHours()).padStart(2, "0");
+  const mi = String(parsed.getMinutes()).padStart(2, "0");
+  const ss = String(parsed.getSeconds()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
+}
+
+function formatLocalDateTimeInput(date = new Date()) {
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const dd = String(date.getDate()).padStart(2, "0");
+  const hh = String(date.getHours()).padStart(2, "0");
+  const mi = String(date.getMinutes()).padStart(2, "0");
+  const ss = String(date.getSeconds()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}T${hh}:${mi}:${ss}`;
+}
+
+function meetingDateTime(meeting = {}) {
+  const raw = meeting.date || meeting.created_at || "";
+  return formatDateTimeSeconds(raw);
+}
+
+function meetingDurationLabel(meeting = {}) {
+  return meeting.duration_sec ? fmtDuration(meeting.duration_sec) : "transcript";
+}
+
+function enableMeetingTitleEdit(input) {
+  input.removeAttribute("readonly");
+  input.classList.add("editing");
+  input.focus();
+  input.select();
+}
+
+function disableMeetingTitleEdit(input) {
+  input.setAttribute("readonly", "");
+  input.classList.remove("editing");
+}
+
+async function finishMeetingTitleEdit(input) {
+  if (!input || input.hasAttribute("readonly")) return;
+  disableMeetingTitleEdit(input);
+  await updateMeetingName(Number(input.dataset.meetingTitle), input.value);
 }
 
 function fmtClock(seconds) {
@@ -230,13 +450,25 @@ function timestampButton(timestamp) {
   return timestamp ? `<button class="timestamp-button" type="button" data-ts="${escapeHtml(timestamp)}">≈${escapeHtml(timestamp)}</button>` : "";
 }
 
-function renderLine(text, timestamp, detail = "") {
+function renderLine(text, timestamp, detail = "", detailHtml = "") {
   return `
     <li class="line-item">
       <p>${escapeHtml(text)}</p>
-      <div class="line-meta">${timestampButton(timestamp)}${detail ? `<span>${escapeHtml(detail)}</span>` : ""}</div>
+      <div class="line-meta">${timestampButton(timestamp)}${detailHtml || (detail ? `<span>${escapeHtml(detail)}</span>` : "")}</div>
     </li>
   `;
+}
+
+function severityKey(severity = "") {
+  const value = String(severity).toLowerCase();
+  if (value.includes("cao") || value.includes("high")) return "high";
+  if (value.includes("thấp") || value.includes("low")) return "low";
+  return "medium";
+}
+
+function severityBadge(severity = "") {
+  const label = severity || "trung bình";
+  return `<span class="severity-badge severity-${severityKey(label)}">${escapeHtml(label)}</span>`;
 }
 
 function renderStats() {
@@ -247,28 +479,52 @@ function renderStats() {
 function renderMeetings() {
   const q = state.librarySearch.trim().toLowerCase();
   const meetings = state.meetings.filter((m) => {
-    const text = `${m.title || ""} ${m.summary || ""} ${m.date || ""}`.toLowerCase();
+    const text = `${m.title || ""} ${m.summary || ""} ${m.date || ""} ${m.source_file || ""} ${deriveMeetingGroup(m)}`.toLowerCase();
     return (!q || text.includes(q)) && meetingMatchesTimeFilter(m);
   });
-  $("meetingList").innerHTML = meetings.length ? meetings.map((m) => `
-    <div class="meeting-card ${m.id === state.activeId ? "active" : ""}" data-meeting-id="${m.id}">
-      <div class="card-meta">
-        <span class="status-dot ${m.can_play_audio ? "ready" : ""}"></span>
-        <span>${fmtDate(m.date)}</span>
-        <span style="margin-left:auto">${escapeHtml(m.source_file || fmtDuration(m.duration_sec))}</span>
-        <button class="meeting-delete" type="button" data-meeting-delete="${m.id}" aria-label="Delete meeting">x</button>
+  const groups = groupMeetingsForSidebar(meetings);
+  $("meetingList").innerHTML = groups.length ? groups.map(([group, groupMeetings]) => `
+    <section class="group-folder">
+      <button class="group-title" type="button" aria-label="${escapeHtml(group)} folder">
+        <b>${escapeHtml(group)}</b>
+        <small>${groupMeetings.length}</small>
+      </button>
+      <div class="group-body">
+        ${groupMeetings.map((m) => `
+          <div class="meeting-card group-meeting ${m.id === state.activeId ? "active" : ""}" data-meeting-id="${m.id}">
+            <div class="meeting-compact-title">
+              <span class="status-dot ${m.can_play_audio ? "ready" : ""}"></span>
+              <textarea class="meeting-title-input" rows="2" readonly data-meeting-title="${m.id}" aria-label="Double-click to rename meeting">${escapeHtml(m.title || `Meeting #${m.id}`)}</textarea>
+              <button class="meeting-delete" type="button" data-meeting-delete="${m.id}" aria-label="Delete meeting">x</button>
+            </div>
+            <div class="meeting-compact-meta"><span>${escapeHtml(meetingDateTime(m))}</span><span>${escapeHtml(meetingDurationLabel(m))}</span></div>
+          </div>
+        `).join("")}
       </div>
-      <input class="meeting-title-input" data-meeting-title="${m.id}" value="${escapeHtml(m.title || `Meeting #${m.id}`)}" aria-label="Edit meeting name">
-      <p class="meeting-source-line">${escapeHtml(m.source_file || `Meeting #${m.id}`)}</p>
-    </div>
-  `).join("") : '<div class="meeting-card"><h3>No memory sources</h3><p>Use New meeting to ingest one.</p></div>';
+    </section>
+  `).join("") : '<div class="meeting-card empty"><h3>No memory sources</h3><p>Use New meeting to ingest one.</p></div>';
 
   document.querySelectorAll("[data-meeting-id]").forEach((el) => {
     el.addEventListener("click", (event) => {
-      if (event.target.closest("input, button")) return;
+      if (shouldIgnoreMeetingCardClick(event.target)) return;
+      const readonlyTitle = event.target.closest("[data-meeting-title][readonly]");
+      if (readonlyTitle) {
+        scheduleMeetingTitleSelection(Number(el.dataset.meetingId));
+        return;
+      }
       selectMeeting(Number(el.dataset.meetingId));
     });
   });
+}
+
+function scheduleMeetingTitleSelection(id) {
+  if (meetingTitleClickTimer) window.clearTimeout(meetingTitleClickTimer);
+  meetingTitleClickTimer = window.setTimeout(() => selectMeeting(id), 220);
+}
+
+function shouldIgnoreMeetingCardClick(target) {
+  if (target.closest("button, input")) return true;
+  return Boolean(target.closest("[data-meeting-title]:not([readonly])"));
 }
 
 function meetingMatchesTimeFilter(meeting) {
@@ -288,14 +544,63 @@ function meetingMatchesTimeFilter(meeting) {
 
 function renderActive() {
   const m = state.active;
-  $("activeMeta").textContent = m ? `${fmtDate(m.date)} · ${fmtDuration(m.duration_sec)} · #${m.id}` : "No meeting selected";
+  $("activeMeta").textContent = m ? `${formatDateTimeSeconds(m.date)} · ${fmtDuration(m.duration_sec)} · #${m.id}` : "No meeting selected";
   $("activeTitleInput").value = m ? (m.title || `Meeting #${m.id}`) : "Memoir";
   $("activeTitleInput").disabled = !m;
-  $("activeSummary").textContent = m ? (m.summary || "No summary yet.") : "Load meetings or ingest a transcript to start building a cross-meeting decision memory layer.";
+  $("exportBtn").disabled = !m;
+  if (!m) closeExportMenu();
+  resizeActiveTitle();
+  renderExecutiveSummary(m);
   renderMeetingPlayer();
   renderDigest();
   renderMemory();
   renderEvidence();
+}
+
+function resizeActiveTitle() {
+  $("activeTitleInput").style.height = "auto";
+  $("activeTitleInput").style.height = `${$("activeTitleInput").scrollHeight}px`;
+}
+
+function splitSummarySentences(text = "") {
+  return String(text)
+    .replace(/\s+/g, " ")
+    .split(/(?<=[.!?。])\s+|[;•]\s+|\n+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+}
+
+function executiveSummaryLines(meeting) {
+  if (!meeting) {
+    return ["Load meetings or ingest a transcript to start building a cross-meeting decision memory layer."];
+  }
+  const rawSummary = meeting.summary || "No executive summary yet.";
+  const sentences = splitSummarySentences(rawSummary);
+  const executivePattern = /(mục tiêu|goal|kết quả|result|decision|quyết định|chốt|thống nhất|deadline|rủi ro|risk|blocker|vấn đề|action|việc cần làm|cam kết|owner|launch|deploy|triển khai|timeline|ngân sách|budget)/i;
+  const chosen = [];
+  const seen = new Set();
+  const add = (text) => {
+    const clean = String(text || "").replace(/\s+/g, " ").trim();
+    if (!clean) return;
+    const key = clean.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    chosen.push(clean);
+  };
+
+  sentences.filter((sentence) => executivePattern.test(sentence)).forEach(add);
+  sentences.forEach(add);
+  return chosen.slice(0, 3);
+}
+
+function renderExecutiveSummary(meeting) {
+  const box = $("activeSummary");
+  const label = meeting ? "Meeting summary" : "Summary";
+  const readable = executiveSummaryLines(meeting);
+  box.innerHTML = `
+    <span class="summary-label">${escapeHtml(label)}</span>
+    ${readable.map((sentence) => `<p>${escapeHtml(sentence)}</p>`).join("")}
+  `;
 }
 
 function renderMeetingPlayer() {
@@ -354,56 +659,115 @@ function renderDigest() {
   const m = state.active || {};
   const facts = m.facts || [];
   const factDecisions = facts.filter((f) => f.type === "quyết định" || f.type === "cam kết");
+  const currentContradictions = activeContradictions();
+  const currentResurfaced = activeResurfaced();
   const decisionRows = [
     ...(m.key_points || []).map((text) => ({ text, detail: "Signal brief" })),
     ...(m.decisions || []).map((d) => ({ text: d.text, timestamp: d.timestamp, detail: "Decision" })),
     ...factDecisions.map((f) => ({ text: `${f.subject}: ${f.statement}`, timestamp: f.timestamp, detail: `${f.type} · ${f.status}` })),
   ];
   const contradictionRows = [
-    ...state.contradictions.map((c) => ({
-      text: `[${c.severity}] ${c.subject}: ${c.explanation}`,
+    ...currentContradictions.map((c) => ({
+      text: `${c.subject}: ${c.explanation}`,
       timestamp: c.new?.timestamp || c.old?.timestamp,
-      detail: "Contradiction",
+      severity: c.severity,
     })),
-    ...state.resurfaced.map((r) => ({
+    ...currentResurfaced.map((r) => ({
       text: `${r.subject}: ${r.explanation}`,
       timestamp: r.new?.timestamp || r.old?.timestamp,
       detail: r.kind || "Forgotten decision",
     })),
   ];
   $("decisions").innerHTML = listHtml(decisionRows, (d) => renderLine(d.text, d.timestamp, d.detail));
-  $("contradictionsForgotten").innerHTML = listHtml(contradictionRows, (r) => renderLine(r.text, r.timestamp, r.detail));
+  $("contradictionsForgotten").innerHTML = listHtml(contradictionRows, (r) => renderLine(r.text, r.timestamp, r.detail, r.severity ? severityBadge(r.severity) : ""));
   $("risks").innerHTML = listHtml(m.risks, (x) => renderLine(x, null, "Risk"));
 }
 
+function actionsForActiveMeeting() {
+  if (!state.activeId) return [];
+  return state.actions.filter((a) => Number(a.meeting_id) === Number(state.activeId));
+}
+
 function renderMemory() {
-  const m = state.active || {};
-  const openActions = state.actions.filter((a) => a.status !== "xong");
-  $("decisionDriftCount").textContent = state.contradictions.length + state.resurfaced.length;
-  $("contradictionCount").textContent = state.contradictions.length;
+  const activeActions = actionsForActiveMeeting();
+  const openActions = activeActions.filter((a) => a.status !== "xong");
+  const currentContradictions = activeContradictions();
+  const currentResurfaced = activeResurfaced();
+  $("decisionDriftCount").textContent = currentContradictions.length + currentResurfaced.length;
+  $("contradictionCount").textContent = currentContradictions.length;
   $("openActionCount").textContent = openActions.length;
-  const currentDecisions = (m.decisions || []).map((d) => ({ ...d, type: "decision" }));
-  const actions = state.actions.map((a) => ({ ...a, type: "action" }));
-  $("allActions").innerHTML = listHtml([...currentDecisions, ...actions], (item) => {
-    if (item.type === "decision") {
-      return `
-        <li class="decision-state">
-          <b>${escapeHtml(item.text)}</b>
-          <div class="line-meta">${timestampButton(item.timestamp)}<span>Current decision state</span></div>
-        </li>
-      `;
-    }
+  const actions = importantActions(activeActions);
+  $("allActions").innerHTML = listHtml(actions, (item) => {
+    const owner = item.owner && item.owner !== "Unassigned" ? item.owner : "";
     return `
-      <li>
-        <b>${escapeHtml(item.task)}</b>
-        <div class="line-meta">
-          ${timestampButton(item.timestamp)}
-          <span>${escapeHtml(item.owner || "Unassigned")} · ${escapeHtml(item.deadline || "no deadline")} · ${escapeHtml(statusLabel(item.status))}</span>
+      <li class="${statusKey(item.status) === "completed" ? "action-completed" : ""}">
+        <label class="action-check-row">
+          ${renderActionCheckbox(item)}
+          <span>
+            <b>${escapeHtml(item.task)}</b>
+            <span class="line-meta">
+              ${timestampButton(item.timestamp)}
+              <span>${escapeHtml(actionMetaText(item))}</span>
+              <button type="button" class="assign-toggle" data-assign-toggle data-action-id="${item.id}">Assign ✉</button>
+            </span>
+          </span>
+        </label>
+        <div class="assign-form" data-assign-form data-action-id="${item.id}" hidden>
+          <input class="assign-owner" data-assign-owner type="text" placeholder="Người phụ trách" value="${escapeHtml(owner)}">
+          <input class="assign-email" data-assign-email type="email" placeholder="email (để trống nếu không gửi)">
+          <button type="button" class="assign-send" data-assign-send data-action-id="${item.id}">Lưu &amp; gửi</button>
         </div>
-        ${renderActionStatusControls(item)}
       </li>
     `;
   });
+}
+
+function importantActions(actions) {
+  const importantKeywords = [
+    "deadline", "submit", "deploy", "build", "review", "budget", "ngân sách",
+    "voting", "vote", "github", "docker", "security", "bảo mật", "password",
+    "mật khẩu", "otp", "timeline", "release", "launch", "blocker", "risk",
+  ];
+  const lowSignalPatterns = [/user guide/i, /join group/i, /tham gia nhóm/i, /qr/i, /liên hệ hỗ trợ/i];
+  const scored = actions.map((action) => {
+    const text = `${action.task || ""} ${action.quote || ""}`.toLowerCase();
+    const lowSignal = lowSignalPatterns.some((pattern) => pattern.test(text));
+    const keywordScore = importantKeywords.filter((keyword) => text.includes(keyword)).length;
+    const metadataScore = [action.deadline, action.owner && action.owner !== "Unassigned", action.timestamp].filter(Boolean).length;
+    return { action, score: keywordScore * 3 + metadataScore - (lowSignal ? 3 : 0) };
+  });
+  const important = scored.filter((item) => item.score > 0).sort((a, b) => b.score - a.score);
+  const deduped = dedupeActionsByIntent(important).map((item) => item.action);
+  return deduped.length ? deduped.slice(0, 8) : dedupeActionsByIntent(actions.map((action) => ({ action, score: 0 }))).map((item) => item.action).slice(0, 8);
+}
+
+function actionMetaText(action) {
+  const owner = action.owner && action.owner !== "Unassigned" ? action.owner : "";
+  const deadline = action.deadline || "no deadline";
+  return owner ? `${owner} · ${deadline}` : deadline;
+}
+
+function dedupeActionsByIntent(scoredActions) {
+  const byIntent = new Map();
+  scoredActions.forEach((item, index) => {
+    const key = actionIntentKey(item.action);
+    const existing = byIntent.get(key);
+    if (!existing || item.score > existing.score) byIntent.set(key, { ...item, index });
+  });
+  return [...byIntent.values()].sort((a, b) => b.score - a.score || a.index - b.index);
+}
+
+function actionIntentKey(action) {
+  const text = `${action.task || ""} ${action.quote || ""}`.toLowerCase();
+  if (text.includes("password") || text.includes("mật khẩu")) return "account-password";
+  return text
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .split(" ")
+    .filter((word) => word.length > 2 && !["ngay", "khi", "sau", "lap", "tuc", "lan", "dau"].includes(word))
+    .slice(0, 8)
+    .join(" ");
 }
 
 function statusKey(status) {
@@ -420,16 +784,22 @@ function statusLabel(status) {
   }[statusKey(status)];
 }
 
-function renderActionStatusControls(action) {
+function renderActionCheckbox(action) {
   return `
-    <div class="action-status-controls" aria-label="Action status">
-      ${["pending", "completed", "cancel"].map((status) => `
-        <button type="button" class="${statusKey(action.status) === status ? "active" : ""}" data-action-status="${status}" data-action-id="${action.id}">
-          ${status}
-        </button>
-      `).join("")}
-    </div>
+    <input class="action-check-input" type="checkbox" data-action-toggle data-action-id="${action.id}" ${statusKey(action.status) === "completed" ? "checked" : ""}>
   `;
+}
+
+function citationMatchesActiveMeeting(citation) {
+  return Boolean(state.activeId && Number(citation?.meeting_id) === Number(state.activeId));
+}
+
+function activeContradictions() {
+  return state.contradictions.filter((item) => citationMatchesActiveMeeting(item.old) || citationMatchesActiveMeeting(item.new));
+}
+
+function activeResurfaced() {
+  return state.resurfaced.filter((item) => citationMatchesActiveMeeting(item.old) || citationMatchesActiveMeeting(item.new));
 }
 
 function collectEvidenceMentions() {
@@ -441,11 +811,11 @@ function collectEvidenceMentions() {
   (m.decisions || []).forEach((d) => add(d.quote || d.text, d.timestamp, "Decision"));
   (m.action_items || []).forEach((a) => add(a.quote || a.task, a.timestamp, "Action"));
   (m.facts || []).forEach((f) => add(f.quote || f.statement, f.timestamp, f.type));
-  state.contradictions.forEach((c) => {
+  activeContradictions().forEach((c) => {
     add(c.new?.quote, c.new?.timestamp, "Contradiction");
     add(c.old?.quote, c.old?.timestamp, "Contradiction");
   });
-  state.resurfaced.forEach((r) => {
+  activeResurfaced().forEach((r) => {
     add(r.new?.quote, r.new?.timestamp, "Forgotten");
     add(r.old?.quote, r.old?.timestamp, "Forgotten");
   });
@@ -496,18 +866,121 @@ function renderEvidence() {
 }
 
 function renderGlossary() {
-  $("glossaryList").innerHTML = state.glossary.length ? state.glossary.map((g) => `
+  const sorted = [...state.glossary].sort((a, b) => {
+    const diff = glossaryMentionCount(b.term) - glossaryMentionCount(a.term);
+    return diff || String(a.term || "").localeCompare(String(b.term || ""));
+  });
+  $("editTermsBtn").hidden = state.glossaryEditing;
+  $("cancelTermsBtn").hidden = !state.glossaryEditing;
+  $("saveTermsBtn").hidden = !state.glossaryEditing;
+  $("termEditorPanel").hidden = false;
+  $("termEditList").hidden = !state.glossaryEditing;
+  $("termAddRow").hidden = !state.glossaryEditing;
+  $("glossaryList").hidden = state.glossaryEditing;
+  $("glossaryList").innerHTML = sorted.length ? sorted.map((g) => `
     <div class="term">
       <span>${g.wrong ? `${escapeHtml(g.wrong)} -> ` : ""}<b>${escapeHtml(g.term)}</b></span>
-      <button class="ghost-btn" data-term-delete="${g.id}" type="button">x</button>
     </div>
   `).join("") : '<div class="term">No terminology yet</div>';
-  document.querySelectorAll("[data-term-delete]").forEach((btn) => {
-    btn.addEventListener("click", () => deleteTerm(Number(btn.dataset.termDelete)));
-  });
-  renderGlossarySuggestions();
+  $("termEditList").innerHTML = state.glossaryEditing && state.glossaryDraft.length ? state.glossaryDraft.map((g, index) => `
+    <div class="term is-editing">
+      <input class="term-edit-input" value="${escapeHtml(g.term || "")}" data-term-index="${index}" aria-label="Edit ${escapeHtml(g.term || "terminology")}">
+      <div class="term-actions">
+        <button class="term-editor-btn" type="button" data-delete-term="${index}" aria-label="Delete ${escapeHtml(g.term || "terminology")}">×</button>
+      </div>
+    </div>
+  `).join("") : "";
   renderGlossaryPanelState();
   renderStats();
+}
+
+function beginGlossaryEdit() {
+  state.glossaryEditing = true;
+  state.glossaryCollapsed = false;
+  state.glossaryDraft = state.glossary.map((g) => ({ ...g }));
+  renderGlossary();
+}
+
+function cancelGlossaryEdit() {
+  state.glossaryEditing = false;
+  state.glossaryDraft = [];
+  $("newTermInput").value = "";
+  renderGlossary();
+}
+
+function addGlossaryDraftTerm() {
+  const input = $("newTermInput");
+  const term = input.value.trim();
+  if (!term) return;
+  state.glossaryDraft.push({ id: null, term, wrong: null });
+  input.value = "";
+  renderGlossary();
+  const inputs = document.querySelectorAll("#termEditList .term-edit-input");
+  inputs[inputs.length - 1]?.focus();
+}
+
+async function saveGlossaryEdit() {
+  const cleanDraft = [];
+  const seen = new Set();
+  state.glossaryDraft.forEach((item) => {
+    const term = String(item.term || "").trim();
+    if (!term) return;
+    const key = term.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    cleanDraft.push({ ...item, term, wrong: item.wrong || null });
+  });
+
+  const originalById = new Map(state.glossary.filter((g) => g.id).map((g) => [String(g.id), g]));
+  const draftIds = new Set(cleanDraft.filter((g) => g.id).map((g) => String(g.id)));
+  const requests = [];
+
+  state.glossary.forEach((original) => {
+    if (original.id && !draftIds.has(String(original.id))) {
+      requests.push(request(API.glossaryItem(original.id), { method: "DELETE" }));
+    }
+  });
+
+  cleanDraft.forEach((draft) => {
+    const original = draft.id ? originalById.get(String(draft.id)) : null;
+    const changed = original && (
+      String(original.term || "").trim() !== draft.term ||
+      String(original.wrong || "").trim() !== String(draft.wrong || "").trim()
+    );
+    if (changed && draft.id) {
+      requests.push(request(API.glossaryItem(draft.id), { method: "DELETE" }));
+    }
+    if (!draft.id || changed) {
+      requests.push(request(API.glossary, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ term: draft.term, wrong: draft.wrong || null }),
+      }));
+    }
+  });
+
+  await Promise.all(requests);
+  state.glossary = await request(API.glossary);
+  state.glossaryEditing = false;
+  state.glossaryDraft = [];
+  $("newTermInput").value = "";
+  renderGlossary();
+}
+
+function glossaryMentionCount(term) {
+  const clean = String(term || "").trim();
+  if (!clean) return 0;
+  const haystack = [
+    state.active?.title || "",
+    state.active?.summary || "",
+    state.active?.transcript || "",
+    ...(state.active?.key_points || []),
+    ...(state.active?.decisions || []).map((item) => `${item.text || ""} ${item.quote || ""}`),
+    ...(state.active?.action_items || []).map((item) => `${item.task || ""} ${item.quote || ""}`),
+    ...(state.active?.facts || []).map((item) => `${item.subject || ""} ${item.statement || ""} ${item.quote || ""}`),
+  ].join("\n");
+  const pattern = new RegExp(clean.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
+  return (haystack.match(pattern) || []).length;
 }
 
 function renderGlossaryPanelState() {
@@ -525,24 +998,23 @@ function renderGlossarySuggestions() {
     box.innerHTML = "";
     return;
   }
-  box.innerHTML = `
-    <div class="suggested-title">Suggested terms</div>
-    ${state.glossarySuggestions.length ? state.glossarySuggestions.map((item) => `
-      <button class="suggested-term" type="button" data-suggested-term="${escapeHtml(item.term)}">
-        <span>${escapeHtml(item.term)}</span>
-        <small>${escapeHtml(item.reason || "Found in this meeting")}</small>
-      </button>
-    `).join("") : '<div class="suggested-empty">No new terms found</div>'}
-  `;
+  box.innerHTML = '<div class="suggested-empty">Terminology above is learned automatically.</div>';
 }
 
 function renderChat() {
   $("chatMessages").innerHTML = state.chat.map((msg) => `
-    <div class="msg ${msg.role === "user" ? "user" : "assistant"}">
-      ${escapeHtml(msg.text).replace(/\n/g, "<br>")}
-      ${msg.citations && msg.citations.length ? `<div class="citations">${msg.citations.map((c) => `
-        <div>#${escapeHtml(c.meeting_id || "?")} · ${escapeHtml(c.meeting_title || "")} ${c.timestamp ? `· ≈${escapeHtml(c.timestamp)}` : ""}<br><small>${escapeHtml(c.quote || "")}</small></div>
-      `).join("")}</div>` : ""}
+    <div class="msg-row ${msg.role === "user" ? "user" : "assistant"}">
+      ${msg.role === "assistant" ? '<img class="agent-avatar" src="./assets/mnemosyne-logo.png?v=20260616-logo" alt="" aria-hidden="true">' : ""}
+      <div class="msg ${msg.role === "user" ? "user" : "assistant"}">
+        <p>${escapeHtml(msg.text).replace(/\n/g, "<br>")}</p>
+        ${msg.citations && msg.citations.length ? `<div class="citations">${msg.citations.map((c) => `
+          <span class="citation-pill">
+            <i class="citation-dot" aria-hidden="true"></i>
+            <span>#${escapeHtml(c.meeting_id || "?")} · ${escapeHtml(c.meeting_title || "")}${c.timestamp ? ` · ≈${escapeHtml(c.timestamp)}` : ""}</span>
+            ${c.quote ? `<small>${escapeHtml(c.quote)}</small>` : ""}
+          </span>
+        `).join("")}</div>` : ""}
+      </div>
     </div>
   `).join("");
   $("chatMessages").scrollTop = $("chatMessages").scrollHeight;
@@ -602,7 +1074,7 @@ function renderAll() {
 }
 
 async function loadBaseData() {
-  const [config, stats, meetings, actions, contradictions, resurfaced, glossary] = await Promise.all([
+  const [config, stats, meetings, actions, contradictions, resurfaced, glossary] = await Promise.allSettled([
     request(API.config),
     request(API.stats),
     request(API.meetings),
@@ -611,23 +1083,53 @@ async function loadBaseData() {
     request(API.resurfaced),
     request(API.glossary),
   ]);
-  state.maxUploadBytes = config.max_upload_bytes || MAX_UPLOAD_BYTES;
-  state.uploadChunkBytes = config.upload_chunk_bytes || DEFAULT_UPLOAD_CHUNK_BYTES;
-  state.stats = stats;
-  state.meetings = meetings;
-  state.actions = actions;
-  state.contradictions = contradictions;
-  state.resurfaced = resurfaced;
-  state.glossary = glossary;
-  if (!state.activeId && meetings.length) {
-    await selectMeeting(meetings[0].id, false);
+  if (meetings.status === "rejected" && BOOTSTRAP_DATA?.meetings) {
+    state.maxUploadBytes = BOOTSTRAP_DATA.config?.max_upload_bytes || MAX_UPLOAD_BYTES;
+    state.uploadChunkBytes = BOOTSTRAP_DATA.config?.upload_chunk_bytes || DEFAULT_UPLOAD_CHUNK_BYTES;
+    state.stats = BOOTSTRAP_DATA.stats || {};
+    state.meetings = BOOTSTRAP_DATA.meetings || [];
+    state.actions = BOOTSTRAP_DATA.actions || [];
+    state.contradictions = BOOTSTRAP_DATA.contradictions || [];
+    state.resurfaced = BOOTSTRAP_DATA.resurfaced || [];
+    state.glossary = BOOTSTRAP_DATA.glossary || [];
+    state.digest = BOOTSTRAP_DATA.digest || null;
+    if (!state.activeId && state.meetings.length) {
+      state.activeId = state.meetings[0].id;
+      state.active = bootstrapMeetingDetail(state.activeId);
+      await loadGlossarySuggestions(state.activeId);
+    }
+    renderAll();
+    return;
+  }
+  const values = [config, stats, meetings, actions, contradictions, resurfaced, glossary].map((result) => {
+    if (result.status === "rejected") throw result.reason;
+    return result.value;
+  });
+  const [configData, statsData, meetingsData, actionsData, contradictionsData, resurfacedData, glossaryData] = values;
+  state.maxUploadBytes = configData.max_upload_bytes || MAX_UPLOAD_BYTES;
+  state.uploadChunkBytes = configData.upload_chunk_bytes || DEFAULT_UPLOAD_CHUNK_BYTES;
+  state.stats = statsData;
+  state.meetings = meetingsData;
+  state.actions = actionsData;
+  state.contradictions = contradictionsData;
+  state.resurfaced = resurfacedData;
+  state.glossary = glossaryData;
+  state.digest = null;
+  if (!state.activeId && meetingsData.length) {
+    await selectMeeting(meetingsData[0].id, false);
   }
   renderAll();
 }
 
 async function selectMeeting(id, rerender = true) {
   state.activeId = id;
-  state.active = await request(API.meeting(id));
+  try {
+    state.active = await request(API.meeting(id));
+  } catch (error) {
+    const detail = bootstrapMeetingDetail(id);
+    if (!detail) throw error;
+    state.active = detail;
+  }
   await loadGlossarySuggestions(id);
   if (rerender) renderAll();
 }
@@ -640,9 +1142,26 @@ async function loadGlossarySuggestions(id = state.activeId) {
   try {
     const out = await request(API.glossarySuggestions(id));
     state.glossarySuggestions = out.suggestions || [];
+    await autoLearnSuggestedTerms();
   } catch (_) {
-    state.glossarySuggestions = [];
+    state.glossarySuggestions = BOOTSTRAP_DATA?.glossary_suggestions?.[String(id)] || [];
   }
+}
+
+async function autoLearnSuggestedTerms() {
+  const existing = new Set(state.glossary.map((g) => String(g.term || "").toLowerCase()));
+  const fresh = state.glossarySuggestions
+    .sort((a, b) => Number(b.count || 0) - Number(a.count || 0))
+    .map((item) => String(item.term || "").trim())
+    .filter((term) => term && !existing.has(term.toLowerCase()));
+  if (!fresh.length) return;
+  await Promise.all(fresh.map((term) => request(API.glossary, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ term, wrong: null }),
+  })));
+  state.glossary = await request(API.glossary);
+  state.glossarySuggestions = [];
 }
 
 async function updateMeetingName(id, title) {
@@ -657,8 +1176,7 @@ async function updateMeetingName(id, title) {
   if (state.activeId === id) {
     state.active = { ...state.active, ...out };
   }
-  renderMeetings();
-  renderActive();
+  renderAll();
   showToast("Meeting name updated");
 }
 
@@ -680,9 +1198,35 @@ function fmtRecClock(ms) {
 }
 
 function setRecordingUi(active) {
-  $("recordTabBtn").hidden = active;
   $("recordMicBtn").hidden = active;
   $("recordStopBtn").hidden = !active;
+}
+
+function canRecordMic() {
+  return Boolean(
+    window.isSecureContext &&
+    window.MediaRecorder &&
+    navigator.mediaDevices &&
+    navigator.mediaDevices.getUserMedia
+  );
+}
+
+function refreshRecordingSupport() {
+  const button = $("recordMicBtn");
+  const status = $("recordStatus");
+  if (!button || !status) return false;
+  const supported = canRecordMic();
+  button.disabled = !supported;
+  if (!supported) {
+    status.textContent = window.isSecureContext
+      ? "Trình duyệt không hỗ trợ ghi âm."
+      : "Recording requires localhost or HTTPS.";
+  } else if (!state.recorder || state.recorder.state === "inactive") {
+    status.textContent = state.recordedFile
+      ? "Recording saved. Press Ingest to upload."
+      : "Ready to record from microphone.";
+  }
+  return supported;
 }
 
 function resetRecording() {
@@ -698,13 +1242,11 @@ function resetRecording() {
   state.recordChunks = [];
   state.recordedFile = null;
   setRecordingUi(false);
-  const status = $("recordStatus");
-  if (status) status.textContent = "";
+  refreshRecordingSupport();
 }
 
 async function startRecording(mode) {
-  if (!navigator.mediaDevices) {
-    $("recordStatus").textContent = "Trình duyệt không hỗ trợ ghi âm.";
+  if (!refreshRecordingSupport()) {
     return;
   }
   try {
@@ -762,9 +1304,10 @@ function onRecordingStop() {
 
 async function ingestMeeting() {
   const form = new FormData();
-  const file = $("ingestFile").files[0] || state.recordedFile;
-  const text = $("ingestText").value.trim();
-  if (!file && !text) throw new Error("Paste transcript or choose a file.");
+  const mode = $("ingestMode").value;
+  const file = mode === "recording" ? state.recordedFile : (mode === "upload" ? $("ingestFile").files[0] : null);
+  const text = mode === "transcript" ? $("ingestText").value.trim() : "";
+  if (!file && !text) throw new Error("Choose an upload, make a recording, or paste a transcript.");
   if (file && file.size === 0) throw new Error("Selected file is empty. Choose a different file.");
   if (file && file.size > state.maxUploadBytes) throw new Error(`Selected file is larger than ${formatUploadLimit()}. Split it or use a shorter clip.`);
   if (file) form.append("file", file);
@@ -773,23 +1316,38 @@ async function ingestMeeting() {
   form.append("date", $("ingestDate").value);
   form.append("extract", $("extractAudio").checked ? "true" : "false");
   form.append("on_duplicate", "new");
-  setUploadStatus(file ? `Uploading ${file.name}... keep this window open.` : "Sending transcript...");
-  await request(API.health);
+  const signal = state.ingestAbort?.signal;
+  resetUploadProgress();
+  if (file) showIngestProgress();
+  if (file) setIngestPercent(0);
+  setUploadStatus(file ? `Đang chuẩn bị ${file.name}. Giữ cửa sổ này mở.` : "Đang chuẩn bị transcript. Giữ cửa sổ này mở.");
+  await request(API.health, { signal });
   let out;
   if (file && file.size > DIRECT_UPLOAD_BYTES) {
     out = await chunkedIngestMeeting(file, text);
   } else {
     try {
-      out = await request(API.ingest, { method: "POST", body: form });
+      if (file) setUploadProgress(10, "Uploading");
+      out = await request(API.ingest, {
+        method: "POST",
+        body: form,
+        signal,
+        onUploadProgress: (loaded, total) => {
+          const ratio = total > 0 ? loaded / total : 0;
+          setUploadProgress(10 + ratio * 70, "Uploading");
+        },
+      });
+      if (file) setIngestPercent(85);
     } catch (error) {
       if (!file || !isPayloadTooLarge(error)) throw error;
-      setUploadStatus("Gateway rejected direct upload. Switching to chunked upload...");
+      setUploadStatus(`Đang chuẩn bị ${file.name}. Giữ cửa sổ này mở.`);
       out = await chunkedIngestMeeting(file, text);
     }
   }
-  setUploadStatus("Upload complete. Refreshing memory...");
+  if (file) setIngestPercent(100);
   $("importDialog").close();
   clearFilePreview();
+  resetUploadProgress();
   resetRecording();
   showToast(`Ingested meeting #${out.meeting_id}`);
   await loadBaseData();
@@ -797,6 +1355,7 @@ async function ingestMeeting() {
 }
 
 async function chunkedIngestMeeting(file, text) {
+  const signal = state.ingestAbort?.signal;
   const session = await request(API.uploads, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -805,26 +1364,43 @@ async function chunkedIngestMeeting(file, text) {
       size: file.size,
       content_type: file.type || "application/octet-stream",
     }),
+    signal,
   });
   const chunkSize = session.chunk_size || state.uploadChunkBytes || DEFAULT_UPLOAD_CHUNK_BYTES;
   const totalChunks = session.total_chunks || Math.ceil(file.size / chunkSize);
+  let uploadedBytes = 0;
+  setUploadProgress(0, "Uploading");
   for (let index = 0; index < totalChunks; index += 1) {
     const start = index * chunkSize;
     const chunk = file.slice(start, Math.min(start + chunkSize, file.size));
     const chunkForm = new FormData();
     chunkForm.append("index", String(index));
     chunkForm.append("chunk", chunk, `${file.name}.part${index}`);
-    setUploadStatus(`Uploading ${file.name}: ${index + 1}/${totalChunks} chunks...`);
-    await request(API.uploadChunk(session.upload_id), { method: "POST", body: chunkForm });
+    const chunkBase = (index / totalChunks) * 70;
+    const chunkSpan = 70 / totalChunks;
+    setUploadProgress(chunkBase, "Uploading");
+    setUploadStatus(`Đang tải lên ${file.name} (${index + 1}/${totalChunks}). Giữ cửa sổ này mở.`);
+    await request(API.uploadChunk(session.upload_id), {
+      method: "POST",
+      body: chunkForm,
+      signal,
+      onUploadProgress: (loaded, total) => {
+        const ratio = total > 0 ? loaded / total : 0;
+        setUploadProgress(chunkBase + ratio * chunkSpan, "Uploading");
+      },
+    });
+    uploadedBytes += chunk.size;
   }
+  setUploadProgress(70, "Uploading");
   const completeForm = new FormData();
   if (text) completeForm.append("text", text);
   completeForm.append("title", $("ingestTitle").value.trim());
   completeForm.append("date", $("ingestDate").value);
   completeForm.append("extract", $("extractAudio").checked ? "true" : "false");
   completeForm.append("on_duplicate", "new");
-  setUploadStatus("Processing uploaded chunks...");
-  return request(API.uploadComplete(session.upload_id), { method: "POST", body: completeForm });
+  setIngestPercent(85);
+  setUploadStatus(`Đang bóc băng & phân tích ${file.name}. Giữ cửa sổ này mở.`);
+  return request(API.uploadComplete(session.upload_id), { method: "POST", body: completeForm, signal });
 }
 
 async function reanalyzeActive() {
@@ -863,112 +1439,148 @@ async function deleteMeetingById(id) {
   showToast("Meeting deleted");
 }
 
-async function generateDigest() {
-  const digest = await request(API.digest);
-  state.chat.push({
-    role: "assistant",
-    text: `${digest.title || "Executive Digest"}\n\n${digest.summary || ""}`,
-    citations: [],
-  });
-  renderChat();
-  showToast("Digest generated in chat");
-}
-
-async function runFollowup() {
-  await request(API.followup, { method: "POST" });
-  const actions = await request(API.actions);
-  state.actions = actions;
-  renderMemory();
-  showToast("Action statuses refreshed");
-}
-
-async function updateActionStatus(id, status) {
+async function updateActionStatus(id, status, checkbox = null) {
   await request(API.action(id), {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ status }),
   });
-  state.actions = await request(API.actions);
-  renderMemory();
+  state.actions = state.actions.map((action) => (Number(action.id) === Number(id) ? { ...action, status } : action));
+  const row = checkbox?.closest("li");
+  if (row) row.classList.toggle("action-completed", statusKey(status) === "completed");
+  $("openActionCount").textContent = actionsForActiveMeeting().filter((action) => statusKey(action.status) !== "completed").length;
   showToast("Action status updated");
 }
 
-async function addTerm(event) {
-  event.preventDefault();
-  const term = $("termInput").value.trim();
-  const wrong = $("wrongInput").value.trim();
-  if (!term) return;
-  await request(API.glossary, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ term, wrong: wrong || null }),
-  });
-  $("termInput").value = "";
-  $("wrongInput").value = "";
-  state.glossary = await request(API.glossary);
-  await loadGlossarySuggestions();
-  renderGlossary();
+async function assignAction(id, owner, email, btn = null) {
+  if (!owner.trim()) {
+    showToast("Nhập người phụ trách");
+    return;
+  }
+  if (btn) btn.disabled = true;
+  try {
+    const res = await request(API.assignAction(id), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ owner: owner.trim(), email: email.trim() || null, notify: Boolean(email.trim()) }),
+    });
+    state.actions = state.actions.map((action) => (Number(action.id) === Number(id) ? { ...action, owner: res.owner } : action));
+    renderMemory();
+    showToast(res.sent ? `Đã giao cho ${res.owner} & gửi email`
+              : res.reason === "email_disabled" ? `Đã giao cho ${res.owner} (email chưa bật)`
+              : `Đã giao cho ${res.owner}`);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
-async function deleteTerm(id) {
-  await request(API.glossaryItem(id), { method: "DELETE" });
-  state.glossary = await request(API.glossary);
-  await loadGlossarySuggestions();
-  renderGlossary();
+function closeExportMenu() {
+  const btn = $("exportBtn");
+  const dd = $("exportDropdown");
+  if (dd) dd.hidden = true;
+  if (btn) btn.setAttribute("aria-expanded", "false");
 }
 
-async function addSuggestedTerm(term) {
-  if (!term) return;
-  await request(API.glossary, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ term, wrong: null }),
-  });
-  state.glossary = await request(API.glossary);
-  await loadGlossarySuggestions();
-  renderGlossary();
-  showToast(`Learned ${term}`);
+function toggleExportMenu() {
+  const btn = $("exportBtn");
+  if (btn.disabled) return;
+  const dd = $("exportDropdown");
+  const open = dd.hidden;
+  dd.hidden = !open;
+  btn.setAttribute("aria-expanded", String(open));
 }
 
-async function learnGuide(event) {
-  event.preventDefault();
-  const file = $("guideFile").files[0];
-  if (!file) return;
-  const form = new FormData();
-  form.append("file", file);
-  const out = await request(API.glossaryLearn, { method: "POST", body: form });
-  state.glossary = await request(API.glossary);
-  await loadGlossarySuggestions();
-  renderGlossary();
-  showToast(`Learned ${(out.terms || []).length} terms`);
+async function exportReport(fmt) {
+  if (!state.activeId) return;
+  closeExportMenu();
+  const btn = $("exportBtn");
+  const original = btn.innerHTML;
+  btn.disabled = true;
+  btn.textContent = "Đang tạo…";
+  try {
+    const res = await fetch(API.report(state.activeId, fmt));
+    if (!res.ok) {
+      let reason = `HTTP ${res.status}`;
+      try { reason = (await res.json()).detail || reason; } catch (_) {}
+      throw new Error(reason);
+    }
+    const blob = await res.blob();
+    const disposition = res.headers.get("Content-Disposition") || "";
+    const match = /filename="?([^"]+)"?/.exec(disposition);
+    const name = match ? match[1] : `meeting_${state.activeId}.${fmt}`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    showToast(`Đã xuất ${name}`);
+  } catch (err) {
+    showToast(`Xuất ${fmt} thất bại: ${err.message}`, "error");
+  } finally {
+    btn.innerHTML = original;
+    btn.disabled = !state.activeId;
+  }
 }
 
 function bindEvents() {
-  $("newMeetingBtn").addEventListener("click", () => $("importDialog").showModal());
+  $("newMeetingBtn").addEventListener("click", () => {
+    setIngestMode($("ingestMode").value || "upload");
+    refreshRecordingSupport();
+    if (!$("ingestDate").value) $("ingestDate").value = formatLocalDateTimeInput();
+    $("importDialog").showModal();
+  });
   $("toggleSidebarBtn").addEventListener("click", toggleSidebar);
+  $("exportBtn").addEventListener("click", (e) => { e.stopPropagation(); toggleExportMenu(); });
+  $("exportDropdown").querySelectorAll("[data-export]").forEach((opt) => {
+    opt.addEventListener("click", () => exportReport(opt.dataset.export));
+  });
+  document.addEventListener("click", (e) => {
+    if (!$("exportMenu").contains(e.target)) closeExportMenu();
+  });
   $("closeImportBtn").addEventListener("click", () => {
     $("importDialog").close();
     clearFilePreview();
+    resetUploadProgress();
     resetRecording();
   });
   $("cancelIngestBtn").addEventListener("click", () => {
+    if (state.ingestAbort) {
+      // An ingest is in flight — abort the upload/processing instead of just closing.
+      state.ingestAbort.abort();
+      return;
+    }
     $("importDialog").close();
     clearFilePreview();
+    resetUploadProgress();
     resetRecording();
   });
-  $("recordTabBtn").addEventListener("click", () => startRecording("tab"));
+  $("ingestMode").addEventListener("change", (event) => setIngestMode(event.target.value));
   $("recordMicBtn").addEventListener("click", () => startRecording("mic"));
   $("recordStopBtn").addEventListener("click", stopRecording);
   $("ingestForm").addEventListener("submit", async (event) => {
     event.preventDefault();
+    state.ingestAbort = new AbortController();
     setIngestBusy(true);
     try {
       setBusy("Ingesting meeting...");
       await ingestMeeting();
     } catch (error) {
-      setUploadStatus(error.message);
-      showToast(error.message);
+      if (error?.name === "AbortError") {
+        $("importDialog").close();
+        clearFilePreview();
+        resetUploadProgress();
+        resetRecording();
+        showToast("Đã hủy ingest");
+      } else {
+        setUploadStatus(error.message);
+        if (hasSelectedIngestFile()) setUploadProgress(0, "Upload interrupted", error.message, "error");
+        showToast(error.message);
+      }
     } finally {
+      state.ingestAbort = null;
       setIngestBusy(false);
     }
   });
@@ -1005,11 +1617,12 @@ function bindEvents() {
     });
   });
   $("activeTitleInput").addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
+    if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       event.target.blur();
     }
   });
+  $("activeTitleInput").addEventListener("input", resizeActiveTitle);
   $("activeTitleInput").addEventListener("blur", (event) => {
     updateMeetingName(state.activeId, event.target.value).catch((e) => showToast(e.message));
   });
@@ -1019,8 +1632,12 @@ function bindEvents() {
   });
   $("reanalyzeBtn")?.addEventListener("click", () => reanalyzeActive().catch((e) => showToast(e.message)));
   $("deleteMeetingBtn").addEventListener("click", () => deleteActive().catch((e) => showToast(e.message)));
-  $("digestBtn").addEventListener("click", () => generateDigest().catch((e) => showToast(e.message)));
-  $("followupBtn").addEventListener("click", () => runFollowup().catch((e) => showToast(e.message)));
+  document.querySelectorAll("[data-scroll-target]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const target = $(button.dataset.scrollTarget);
+      if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  });
   $("playerToggleBtn").addEventListener("click", () => toggleMeetingPlayback());
   $("meetingAudio").addEventListener("play", () => $("playerToggleBtn").classList.add("playing"));
   $("meetingAudio").addEventListener("pause", () => $("playerToggleBtn").classList.remove("playing"));
@@ -1040,35 +1657,55 @@ function bindEvents() {
       deleteMeetingById(Number(meetingDelete.dataset.meetingDelete)).catch((e) => showToast(e.message));
       return;
     }
-    const suggested = event.target.closest("[data-suggested-term]");
-    if (suggested) {
-      event.preventDefault();
-      addSuggestedTerm(suggested.dataset.suggestedTerm).catch((e) => showToast(e.message));
-      return;
-    }
     const ts = event.target.closest("[data-ts]");
     if (ts) {
       event.preventDefault();
       seekToTimestamp(ts.dataset.ts);
       return;
     }
-    const status = event.target.closest("[data-action-status]");
-    if (status) {
+    const toggle = event.target.closest("[data-action-toggle]");
+    if (toggle) {
+      updateActionStatus(Number(toggle.dataset.actionId), toggle.checked ? "completed" : "pending", toggle).catch((e) => showToast(e.message));
+      return;
+    }
+    const assignToggle = event.target.closest("[data-assign-toggle]");
+    if (assignToggle) {
       event.preventDefault();
-      updateActionStatus(Number(status.dataset.actionId), status.dataset.actionStatus).catch((e) => showToast(e.message));
+      const form = assignToggle.closest("li")?.querySelector("[data-assign-form]");
+      if (form) {
+        form.hidden = !form.hidden;
+        if (!form.hidden) form.querySelector("[data-assign-owner]")?.focus();
+      }
+      return;
+    }
+    const assignSend = event.target.closest("[data-assign-send]");
+    if (assignSend) {
+      event.preventDefault();
+      const form = assignSend.closest("[data-assign-form]");
+      const owner = form?.querySelector("[data-assign-owner]")?.value || "";
+      const email = form?.querySelector("[data-assign-email]")?.value || "";
+      assignAction(Number(assignSend.dataset.actionId), owner, email, assignSend).catch((e) => showToast(e.message));
     }
   });
   document.addEventListener("keydown", (event) => {
     const input = event.target.closest("[data-meeting-title]");
-    if (input && event.key === "Enter") {
+    if (input && event.key === "Enter" && !input.hasAttribute("readonly")) {
       event.preventDefault();
       input.blur();
+    }
+  });
+  document.addEventListener("dblclick", (event) => {
+    const input = event.target.closest("[data-meeting-title]");
+    if (input && event.type === "dblclick") {
+      event.preventDefault();
+      if (meetingTitleClickTimer) window.clearTimeout(meetingTitleClickTimer);
+      enableMeetingTitleEdit(input);
     }
   });
   document.addEventListener("blur", (event) => {
     const input = event.target.closest("[data-meeting-title]");
     if (input) {
-      updateMeetingName(Number(input.dataset.meetingTitle), input.value).catch((e) => showToast(e.message));
+      finishMeetingTitleEdit(input).catch((e) => showToast(e.message));
     }
   }, true);
   $("chatForm").addEventListener("submit", async (event) => {
@@ -1084,11 +1721,39 @@ function bindEvents() {
       renderChat();
     }
   });
-  $("glossaryForm").addEventListener("submit", addTerm);
-  $("guideForm").addEventListener("submit", learnGuide);
   $("toggleGlossaryBtn").addEventListener("click", () => {
     state.glossaryCollapsed = !state.glossaryCollapsed;
     renderGlossaryPanelState();
+  });
+  $("editTermsBtn").addEventListener("click", beginGlossaryEdit);
+  $("cancelTermsBtn").addEventListener("click", cancelGlossaryEdit);
+  $("saveTermsBtn").addEventListener("click", async () => {
+    try {
+      await saveGlossaryEdit();
+    } catch (error) {
+      alert(`Could not save terminology: ${error.message}`);
+    }
+  });
+  $("addTermBtn").addEventListener("click", addGlossaryDraftTerm);
+  $("newTermInput").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") addGlossaryDraftTerm();
+  });
+  $("termEditList").addEventListener("input", (event) => {
+    const input = event.target.closest(".term-edit-input");
+    if (!input) return;
+    const index = Number(input.dataset.termIndex);
+    if (!Number.isNaN(index) && state.glossaryDraft[index]) {
+      state.glossaryDraft[index].term = input.value;
+    }
+  });
+  $("termEditList").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-delete-term]");
+    if (!button) return;
+    const index = Number(button.dataset.deleteTerm);
+    if (!Number.isNaN(index)) {
+      state.glossaryDraft.splice(index, 1);
+      renderGlossary();
+    }
   });
   document.querySelectorAll(".tabs [data-tab]").forEach((button) => {
     button.addEventListener("click", () => switchTab(button.dataset.tab));
@@ -1103,6 +1768,7 @@ function bindEvents() {
 
 async function boot() {
   bindEvents();
+  setIngestMode($("ingestMode").value || "upload");
   renderSuggestions();
   renderAll();
   try {

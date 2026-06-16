@@ -127,6 +127,14 @@ def test_update_meeting_metadata_changes_title_and_source_file():
     assert meeting.source_file == "renamed.mp3"
 
 
+def test_rename_meeting_syncs_report_title_for_export():
+    # Export reads report_json (m.report()), so renaming must propagate there too,
+    # otherwise the file keeps the original ingest title.
+    mid = db.save_meeting(_report(title="test"))
+    db.update_meeting_metadata(mid, title="Họp chính thức")
+    assert db.get_meeting(mid).report().title == "Họp chính thức"
+
+
 def test_counts():
     mid = db.save_meeting(_report(actions=[ActionItem(task="A")]))
     db.save_facts(mid, [KnowledgeFact(type="fact", subject="s", statement="x")])

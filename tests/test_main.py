@@ -21,9 +21,12 @@ def _router(prompt, model, **k):
             {"type": "quyết định", "subject": "ngày launch", "statement": stmt,
              "quote": f"chốt {stmt}"},
         ]})
-    # contradiction verdict
-    if "MÂU THUẪN" in prompt:
-        return json.dumps({"contradicts": True, "explanation": "30/6 vs 15/7", "severity": "cao"})
+    # batched contradiction verdict (one candidate -> index 0).
+    # Key on the listing header, not "MÂU THUẪN" — that word now also appears in the
+    # ask-prompt rule about recorded contradictions.
+    if "DANH SÁCH CŨ" in prompt:
+        return json.dumps({"conflicts": [
+            {"index": 0, "explanation": "30/6 vs 15/7", "severity": "cao"}]})
     # recall answer
     if "CÂU HỎI" in prompt:
         return json.dumps({
