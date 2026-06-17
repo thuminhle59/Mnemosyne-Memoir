@@ -34,7 +34,7 @@ Memoir là ứng dụng ghi nhớ quy trình họp, đóng vai trò như một b
   <ol>
     <li><a href="#what-it-does">What It Does</a></li>
     <li><a href="#architecture">Architecture</a></li>
-    <li><a href="#project-layout">Project Layout</a><li>
+    <li><a href="#project-layout">Project Layout</a></li>
     <li><a href="#backend-modules">Backend Modules</a></li>
     <li><a href="#frontend-modules">Frontend Modules</a></li>
     <li><a href="#requirements">Requirements</a></li>
