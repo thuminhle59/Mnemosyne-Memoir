@@ -21,14 +21,29 @@
 
 # Memoir
 
-Memoir is a meeting-memory app for teams that need decisions, actions, evidence, and contradictions to survive across meetings. It ingests transcripts, audio, or video; stores every meeting in a local memory database; then lets users review the selected meeting and ask questions across the same topic/group.
+<p>Memoir là ứng dụng ghi nhớ quy trình họp, đóng vai trò như một bộ nhớ của tổ chức, giúp ghi nhớ toàn bộ lịch sử dự án và quy trình họp, phát hiện thay đổi và mẫu thuẫn theo thời gian của dự án, gợi nhắc quyết định bị lãng quên và trả lời câu hỏi xuyên suốt toàn bộ lịch sử họp.
+</p>
 
-The app is built for GreenNode Claw-a-thon 2026 and can run both as a local FastAPI web app and as a GreenNode AgentBase Custom Agent.
+> Built for **GreenNode Claw-a-thon 2026** as a Custom Agent on **GreenNode AgentBase**
 
-<img src="https://github.com/thuminhle59/Mnemosyne-Memoir/blob/main/assets/memoir_explainer-screenshot.png" alt="Logo">
+<img src="https://github.com/thuminhle59/Mnemosyne-Memoir/blob/main/assets/memoir_explainer-screenshot.png" alt="Logo" width="500" height="450">
 
 > **Data Compliance**: use synthetic, staged, public, or personal demo data only. Do not upload private customer meetings, internal recordings, or PII into a public demo runtime.
 
+<!-- TABLE OF CONTENTS -->
+<details open="open">
+  <summary><h2 style="display: inline-block">Table of Contents</h2></summary>
+  <ol>
+    <li><a href="#description">Description</a></li>
+    <li><a href="#Design">Design</a></li>
+    <li><a href="#key-takeaways">Key TakeAways</a></li>
+    <li><a href="#future-work">Future Work</a></li>
+    <li><a href="#thank-you">Thank You</a></li>
+  </ol>
+</details>
+
+> Built for **GreenNode Claw-a-thon 2026** as a Custom Agent on **GreenNode AgentBase**
+> 
 ## What It Does
 
 - Ingests `.txt`, `.md`, audio, or video files through chunked upload.
