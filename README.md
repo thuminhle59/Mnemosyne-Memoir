@@ -5,13 +5,6 @@
   </a>
   <p align="center">
     Memory · Engine · Managing · Organizational · Intelligence · Resolution
-    <br />
-    <a href="youtube.com"><strong>Product Demo</strong></a>
-    <br />
-    <br />
-    <a href="endpoint.com"><strong>Try it yourself»</strong></a>
-    <br />
-    <br />
   </p>
 </p>    
  <br />
@@ -27,6 +20,12 @@
 
 > **Data Compliance**: use synthetic, staged, public, or personal demo data only. Do not upload private customer meetings, internal recordings, or PII into a public demo runtime.
 
+  <br />
+  <a href="youtube.com"><strong>Product Demo</strong></a>
+  <br />
+  <a href="endpoint.com"><strong>Try it yourself»</strong></a>
+  <br />
+    
 <!-- TABLE OF CONTENTS -->
 <details open="open">
   <summary><h2 style="display: inline-block">Table of Contents</h2></summary>
