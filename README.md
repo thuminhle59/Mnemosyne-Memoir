@@ -47,9 +47,9 @@ Memoir là ứng dụng ghi nhớ quy trình họp, đóng vai trò như một b
 > 
 ## What It Does
 
-- Ingest file .txt, .md, audio, hoặc video bằng chunked upload, và transcribe media.
-- Nhớ theo chuỗi meeting: so sánh meeting hiện tại với lịch sử, không xử lý từng transcript rời rạc.
-- Tóm tắt cuộc họp, bắt contradiction: chỉ ra khi claim/decision mới mâu thuẫn với meeting trước, kèm timestamp để truy vết.
+- Ingest file audio, text, hoặc video bằng chunked upload, sau đó transcribe media.
+- Nhớ theo chuỗi meeting: so sánh meeting hiện tại với lịch sử dự án, không chỉ xử lý từng meeting rời rạc.
+- Tóm tắt cuộc họp, bắt contradiction: chỉ ra khi quyết định mới mâu thuẫn với meeting trước, kèm timestamp để truy vết.
 - Q&A theo context: trả lời trong phạm vi group/topic của meeting đang chọn.
 - Hỗ trợ assign action và gửi email follow-up nhắc nhở.
 
