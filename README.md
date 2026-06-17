@@ -21,8 +21,8 @@ Memoir là ứng dụng ghi nhớ quy trình họp, đóng vai trò như một b
 > **Data Compliance**: use synthetic, staged, public, or personal demo data only. Do not upload private customer meetings, internal recordings, or PII into a public demo runtime.
 
 <p align="center">
-  <br />
   <a href="youtube.com"><strong>Product Demo</strong></a>
+  <br />
   <br />
   <a href="endpoint.com"><strong>Try it yourself»</strong></a>
   <br />
