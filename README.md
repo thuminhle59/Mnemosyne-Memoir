@@ -49,8 +49,6 @@
 > 
 ## What It Does
 
-Memoir giúp team biến transcript, audio, hoặc video meeting thành bộ nhớ quyết định có thể tra cứu và so sánh lại về sau.
-
 - Ingest file .txt, .md, audio, hoặc video bằng chunked upload.
 - Transcribe media bằng STT, rồi extract structured memory.
 - Lưu meetings, transcript, decisions, actions, facts/evidence, risks, contradictions, resurfaced items, terminology vào SQLite.
