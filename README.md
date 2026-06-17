@@ -21,7 +21,7 @@
 
 # Memoir
 
-<p>Memoir là ứng dụng ghi nhớ quy trình họp, đóng vai trò như một bộ nhớ của tổ chức, giúp ghi nhớ toàn bộ lịch sử dự án và quy trình họp, phát hiện thay đổi và mẫu thuẫn theo thời gian của dự án, gợi nhắc quyết định bị lãng quên và trả lời câu hỏi xuyên suốt toàn bộ lịch sử họp.
+<p>Memoir là ứng dụng ghi nhớ quy trình họp, đóng vai trò như một bộ nhớ của tổ chức, giúp ghi nhớ toàn bộ lịch sử dự án, tóm tắt quá trình cuộc họp, phát hiện thay đổi và mẫu thuẫn theo thời gian, gợi nhắc quyết định bị lãng quên và trả lời câu hỏi xuyên suốt toàn bộ lịch sử.
 </p>
 
 > Built for **GreenNode Claw-a-thon 2026** as a Custom Agent on **GreenNode AgentBase**
@@ -35,9 +35,13 @@
   <summary><h2 style="display: inline-block">Table of Contents</h2></summary>
   <ol>
     <li><a href="#description">Description</a></li>
-    <li><a href="#Design">Design</a></li>
-    <li><a href="#key-takeaways">Key TakeAways</a></li>
-    <li><a href="#future-work">Future Work</a></li>
+    <li><a href="#what-it-does">What It Does</a></li>
+    <li><a href="#architecture">Architecture</a></li>
+    <li><a href="#project-layout">Project Layout/a></li>
+    <li><a href="#backend-modules">Backend Modules/a></li>
+    <li><a href="#frontend-modules">Frontend Modules/a></li>
+    <li><a href="#requirements">Requirements/a></li>
+    <li><a href="#related-docs">Related Docs/a></li>
     <li><a href="#thank-you">Thank You</a></li>
   </ol>
 </details>
@@ -46,25 +50,27 @@
 > 
 ## What It Does
 
-- Ingests `.txt`, `.md`, audio, or video files through chunked upload.
-- Transcribes media with STT, applies glossary/terminology correction, and extracts structured memory.
-- Stores meetings, transcripts, decisions, actions, facts/evidence, risks, contradictions, resurfaced items, terminology, playback audio, and group metadata in SQLite.
-- Groups meetings by explicit `group_title`, with title-based fallback for older rows.
-- Lets users drag meeting cards into groups and double-click group titles to rename them.
-- Scopes local data by browser owner using `localStorage` plus the `X-Memoir-Owner` request header.
-- Shows Summary, Actions, and Evidence tabs for the selected meeting.
-- Answers Q&A only within the current selected meeting group/topic.
-- Supports action assignment, owner save, and optional email notification.
-- Lets users edit terminology, save it, and refresh a meeting so transcript and derived memory are reprocessed with the updated terminology.
+Memoir giúp team biến transcript, audio, hoặc video meeting thành bộ nhớ quyết định có thể tra cứu và so sánh lại về sau.
+
+- Ingest file .txt, .md, audio, hoặc video bằng chunked upload.
+- Transcribe media bằng STT, sửa terminology/tên riêng, rồi extract structured memory.
+- Lưu meetings, transcript, decisions, actions, facts/evidence, risks, contradictions, resurfaced items, terminology, playback audio và group metadata vào SQLite.
+- Group meetings theo group_title; nếu data cũ chưa có group_title, app fallback theo title hiện tại.
+- Cho phép kéo thả meeting card vào group khác và double-click group title để rename inline.
+- Tách dữ liệu local theo browser owner bằng localStorage và header X-Memoir-Owner.
+- Hiển thị các tab Summary, Actions, và Evidence cho meeting đang chọn.
+- Q&A chỉ trả lời trong phạm vi group/topic của meeting đang chọn.
+- Hỗ trợ assign action, lưu owner/email và gửi email follow-up nếu đã cấu hình SMTP.
+- Cho phép edit terminology, save, rồi refresh meeting để reprocess transcript và derived memory theo terminology mới.
 
 ## What Makes It Different
 
-- Most meeting tools summarize one call. Memoir compares each selected meeting against prior meetings in the same topic/group.
-- Contradictions are treated as concrete conflicts between dated meeting memories, not generic risk notes.
-- Q&A is scoped to the active group/topic, so answers stay relevant to the selected meeting context.
-- Terminology is user-correctable after ingest; users can refresh a meeting with the updated glossary instead of re-uploading from scratch.
-- Meeting organization is user-controlled through drag/drop groups and inline group rename, independent from meeting-title rename.
-- The same backend powers the local web app and the AgentBase runtime.
+- Nhớ theo chuỗi meeting: so sánh meeting hiện tại với lịch sử, không xử lý từng transcript rời rạc.
+- Bắt contradiction: chỉ ra khi claim/decision mới mâu thuẫn với meeting trước, kèm meeting number để truy vết.
+
+- Terminology-aware: có bộ terminology để sửa tên riêng/thuật ngữ như Nova, Full Rollout, Auto Settlement.
+- Q&A theo context: trả lời trong phạm vi group/topic của meeting đang chọn.
+- Workflow sau meeting: assign action, lưu owner/email, gửi email follow-up.
 
 ## Architecture
 
@@ -114,30 +120,32 @@ Mnemosyne/
 
 ## Backend Modules
 
-| Module | Responsibility |
+## Backend Modules
+
+| Module | Vai trò |
 |---|---|
 | `server.py` | REST API, static frontend, chunked upload, progress, owner scoping, meeting/group/action/glossary routes. |
-| `main.py` | GreenNode AgentBase entrypoint, `/health`, `/invocations`, and web app mount. |
+| `main.py` | AgentBase entrypoint, `/health`, `/invocations`, và web app mount. |
 | `brain.py` | Core orchestration: ingest, Q&A, summary/digest, contradictions, resurfaced decisions, action follow-up, assignment, terminology refresh. |
 | `db.py` | SQLite persistence, SQLAlchemy models, owner filtering, group metadata, display ids, light migrations. |
-| `models.py` | Pydantic contracts for LLM output and memory objects. |
-| `analyze.py` | Transcript analysis into structured meeting reports. |
-| `transcribe.py` | STT request handling and terminology correction. |
-| `media.py` | Audio/video conversion, chunking, duration and playback helpers. |
-| `retrieve.py` | Lexical retrieval over scoped meeting memory for Q&A. |
-| `mailer.py` | Optional assignment/action email delivery. |
+| `models.py` | Pydantic contracts cho LLM output và memory objects. |
+| `analyze.py` | Phân tích transcript thành structured meeting report. |
+| `transcribe.py` | STT request handling và terminology correction pipeline. |
+| `media.py` | Audio/video conversion, chunking, duration và playback helpers. |
+| `retrieve.py` | Lexical retrieval trên scoped meeting memory cho Q&A. |
+| `mailer.py` | Optional SMTP email delivery cho assignment/action. |
 | `report.py` | DOCX/PDF report helpers. |
-| `config.py` | Environment variables and model/runtime defaults. |
+| `config.py` | Environment variables và model/runtime defaults. |
 
 ## Frontend Modules
 
-| File | Responsibility |
+| File | Vai trò |
 |---|---|
 | `web/index.html` | App shell, sidebar, workspace tabs, Q&A panel, ingest drawer. |
-| `web/styles.css` | Memoir visual system, responsive layout, cards, audio player, terminology, evidence/transcript panes. |
+| `web/styles.css` | Visual system, responsive layout, cards, audio player, terminology, evidence/transcript panes. |
 | `web/app.js` | Client state, API calls, owner header, meeting grouping, ingest/upload progress, action assignment, terminology editing, Q&A, tab rendering. |
-| `web/assets/mnemosyne-logo.png` | Memoir logo asset. |
-| `web/assets/add-user.png` | Action assignment icon asset. |
+| `web/assets/mnemosyne-logo.png` | Logo Memoir. |
+| `web/assets/add-user.png` | Icon assign owner/action. |
 
 ## Requirements
 
@@ -151,8 +159,12 @@ Runtime configuration starts from `.env.example`. Local secrets belong in `.env`
 
 ## Related Docs
 
-- `docs/SPEC.md` - current product and technical specification.
+- `docs/SPEC.md` - product và technical specification hiện tại.
 - `docs/FRONTEND_HANDOFF.md` - frontend/API handoff notes.
-- `.env.example` - local runtime configuration template.
-- `Dockerfile` - AgentBase-compatible container build.
-- `tests/` - executable contracts for backend, frontend markup/CSS, mailer, and memory behavior.
+- `.env.example` - template cấu hình runtime local.
+- `Dockerfile` - container build tương thích AgentBase.
+- `tests/` - executable contracts cho backend, frontend markup/CSS, mailer và memory behavior.
+
+## Thank You
+
+ Nếu bạn thích agent của mình, hãy ủng hộ bằng cách cho vote cho team Mnemosyne tại GreenNode Claw-a-thon 2026 và tặng repo này 1 sao nhé :)
