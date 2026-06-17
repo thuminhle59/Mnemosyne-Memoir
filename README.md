@@ -119,8 +119,6 @@ Mnemosyne/
 
 ## Backend Modules
 
-## Backend Modules
-
 | Module | Vai trò |
 |---|---|
 | `server.py` | REST API, static frontend, chunked upload, progress, owner scoping, meeting/group/action/glossary routes. |
@@ -148,13 +146,56 @@ Mnemosyne/
 
 ## Requirements
 
-- Python 3.12
-- `ffmpeg` available on `PATH`
-- An OpenAI-compatible LLM/STT endpoint and API key
-- Optional SMTP credentials for assignment emails
-- Optional Docker for AgentBase image builds
+Để clone repo và chạy/build app ở local, máy cần có:
 
-Runtime configuration starts from `.env.example`. Local secrets belong in `.env`, which must not be committed.
+- Python 3.12.
+- `ffmpeg` có sẵn trên `PATH` để xử lý audio/video ingest.
+- OpenAI-compatible LLM/STT endpoint và API key.
+- Docker nếu muốn build container hoặc deploy lên AgentBase.
+- SMTP credentials nếu muốn dùng tính năng gửi email assignment.
+
+Setup local:
+
+```bash
+LLM_API_KEY=<your-api-key>
+LLM_BASE_URL=<openai-compatible-base-url>
+STT_URL=<openai-compatible-stt-url>
+STT_MODEL=<stt-model>
+DATABASE_URL=sqlite:///mnemosyne.db
+```
+
+Chạy app local:
+
+```bash
+uvicorn server:app --host 127.0.0.1 --port 18093
+```
+
+Mở browser tại:
+
+```text
+http://127.0.0.1:18093/
+```
+
+Chạy test:
+
+```bash
+PYTHONPATH=. pytest -q
+```
+
+Build Docker image:
+
+```bash
+docker build --platform linux/amd64 -t memoir:local .
+docker run --rm -p 8080:8080 --env-file .env memoir:local
+```
+
+Sau khi container chạy, kiểm tra:
+
+```text
+http://127.0.0.1:8080/health
+```
+
+Local secrets nên để trong `.env` và không commit file này.
 
 ## Related Docs
 
