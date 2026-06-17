@@ -65,10 +65,64 @@ STT_NORMALIZE = _env_pairs("STT_NORMALIZE", [
 # Risky on unknown-topic audio (e.g. a real "GlowTone" brand) -> behind a flag.
 STT_FIX_TERMS = os.getenv("STT_FIX_TERMS", "true").lower() == "true"
 STT_TERM_FIXES = _env_pairs("STT_TERM_FIXES", [
+    # --- Known mis-hearings of product/project names ---
     [r"\bcloud[\s-]?(thorn|town|thon|tron)\b", "Claw-a-thon"],
     [r"\bglow[\s-]?tone\b", "Claw-a-thon"],
     [r"\bclaw[\s-]?a[\s-]?thon\b", "Claw-a-thon"],
     [r"\bcl[ao]w[\s-]?a[\s-]?thon\b", "Claw-a-thon"],
+    [r"\bn[oô][\s-]?va\b", "Nova"],
+    [r"\bm[ơo][\s-]?ch[aă]n\b", "Merchant"],
+    [r"\bp[oô][\s-]?t[ồo]\b", "Portal"],
+    [r"\bs[eé]t[\s-]?t[ồo][\s-]?m[ầa]n\b", "Settlement"],
+    [r"\b[oô][\s-]?p[ầa]n[\s-]?claw\b", "OpenClaw"],
+    [r"\bph[uô](?:n|ng)[\s-]?r[oô][\s-]?l[aă]o\b", "Full Rollout"],
+    [r"\bfull[\s-]?r[oô]l[aă]o\b", "Full Rollout"],
+    [r"\b[oô][\s-]?t[oô](?=\s+(pass|settlement|pilot|merchant))", "Auto"],
+    [r"\bauto[\s-]?pass\b", "Auto Pass"],
+    # --- Vietnamese phonetic transcriptions of English tech terms ---
+    # OTP
+    [r"\bô[\s-]?tê[\s-]?pê\b", "OTP"],
+    [r"\bô[\s-]?ti[\s-]?pi\b", "OTP"],
+    # canary
+    [r"\bca[\s-]?na[\s-]?ri\b", "canary"],
+    [r"\bca[\s-]?ne[\s-]?ri\b", "canary"],
+    # rollout
+    [r"\br[oô][\s-]?lao\b", "rollout"],
+    [r"\br[oô]l[\s-]?ao\b", "rollout"],
+    # deploy / deployment
+    [r"\bđi[\s-]?ploi\b", "deploy"],
+    [r"\bđi[\s-]?ploi[\s-]?m[eê]n\b", "deployment"],
+    # feature flag
+    [r"\bphít[\s-]?chờ[\s-]?flag\b", "feature flag"],
+    [r"\bfí[\s-]?chờ[\s-]?flag\b", "feature flag"],
+    # compliance
+    [r"\bc[oô]m[\s-]?plai[\s-]?ần\b", "Compliance"],
+    [r"\bcô[\s-]?mờ[\s-]?lai[\s-]?ần\b", "Compliance"],
+    # dashboard
+    [r"\bđát[\s-]?bô\b", "dashboard"],
+    [r"\bđash[\s-]?bô\b", "dashboard"],
+    # regression
+    [r"\brì[\s-]?grét[\s-]?shần\b", "regression"],
+    # callback
+    [r"\bcô[\s-]?bắc\b", "callback"],
+    [r"\bcall[\s-]?bắc\b", "callback"],
+    # latency
+    [r"\blê[\s-]?tần[\s-]?si\b", "latency"],
+    # idempotency
+    [r"\bai[\s-]?đem[\s-]?p[oô][\s-]?tần[\s-]?si\b", "idempotency"],
+    # reconciliation
+    [r"\brì[\s-]?cần[\s-]?si[\s-]?li[\s-]?ây[\s-]?shần\b", "reconciliation"],
+    # hotline
+    [r"\bhót[\s-]?lai\b", "hotline"],
+    # sprint
+    [r"\bsprít\b", "sprint"],
+    # go-live
+    [r"\bgô[\s-]?lai\b", "go-live"],
+    [r"\bgô[\s-]?live\b", "go-live"],
+    # backlog
+    [r"\bbác[\s-]?log\b", "backlog"],
+    # escalate
+    [r"\bét[\s-]?ca[\s-]?lết\b", "escalate"],
 ])
 
 # Layer 3 — LLM correction: context-aware fix of mis-transcribed proper nouns
@@ -78,7 +132,10 @@ STT_CORRECT_MODEL = os.getenv("STT_CORRECT_MODEL", "google/gemma-4-31b-it")
 STT_GLOSSARY = os.getenv(
     "STT_GLOSSARY",
     "Claw-a-thon, GreenNode, ZaloPay, AgentBase, OpenClaw, Mnemosyne, "
-    "Merchant, MCP Server, QA, UAT, API, Pilot, Canary, Settlement",
+    "Merchant, MCP Server, QA, UAT, OTP, API, Pilot, Canary, Settlement, "
+    "Rollout, Deploy, Feature Flag, Compliance, Dashboard, Reconciliation, "
+    "Idempotency, Callback, Retry, Latency, Timezone, Hotline, Regression, "
+    "Canary, Go-live, Backlog, Sprint, Escalate",
 )
 
 # --- Memory store (SQLAlchemy; SQLite local for demo, Postgres via env later) ---

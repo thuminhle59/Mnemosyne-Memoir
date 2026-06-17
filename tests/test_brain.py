@@ -24,7 +24,7 @@ def test_analysis_prompts_preserve_english_terms_and_proper_nouns():
     for prompt in [analysis_prompt, facts_prompt]:
         assert "GIỮ NGUYÊN chính xác tiếng Anh" in prompt
         assert "KHÔNG phiên âm" in prompt
-        assert "Merchant, AgentBase, OpenClaw, MCP Server, QA, UAT" in prompt
+        assert "Merchant" in prompt and "AgentBase" in prompt and "OTP" in prompt and "QA" in prompt
 
 
 def test_analysis_and_fact_prompts_allow_summary_like_decisions_without_quotes():
@@ -129,6 +129,32 @@ def test_ingest_saves_meeting_facts_and_runs_contradiction(monkeypatch):
     saved = db.all_facts()
     assert saved[0].subject == "ngày launch"
     assert saved[0].meeting_id == out["meeting_id"]
+
+
+def test_ingest_text_applies_term_corrections_before_saving_transcript(monkeypatch):
+    captured = {}
+
+    def fake_analyze(transcript, date):
+        captured["transcript"] = transcript
+        return _report(date=date, summary=transcript, transcript=transcript)
+
+    monkeypatch.setattr(brain.analyze, "analyze", fake_analyze)
+    monkeypatch.setattr(brain, "correct_terms", lambda text, owner_id=None: text)
+    monkeypatch.setattr(brain, "extract_facts", lambda report, transcript: [])
+    monkeypatch.setattr(brain, "detect_contradictions", lambda facts: [])
+    monkeypatch.setattr(brain, "detect_forgotten_decisions", lambda facts: [])
+
+    out = brain.ingest(
+        text="Nô Va Mơ Chăn Pô Tồ chốt Pilot Sét tồ mần.",
+        date="2026-06-16",
+        title="Họp",
+    )
+
+    saved = db.get_meeting(out["meeting_id"])
+    assert "Nova Merchant Portal" in captured["transcript"]
+    assert "Pilot Settlement" in captured["transcript"]
+    assert "Nova Merchant Portal" in saved.transcript
+    assert "Pilot Settlement" in saved.transcript
 
 
 def test_reingesting_same_audio_reuses_existing_analysis_for_stable_decisions(monkeypatch):
@@ -694,6 +720,44 @@ def test_detect_contradictions_is_one_call_per_new_fact(monkeypatch):
     monkeypatch.setattr(brain.llm, "chat", counting_chat)
     brain.detect_contradictions([nf])
     assert calls["n"] == 1                        # 3 candidates, still one batched call
+
+
+def test_detect_contradictions_compares_statement_overlap_when_subjects_differ(monkeypatch):
+    """Contradiction retrieval must not depend only on exact/similar subjects.
+    LLM extraction can name the same decision scope differently across meetings."""
+    m1 = db.save_meeting(_report(title="H1", date="2026-06-01", transcript="t1"))
+    db.save_facts(m1, [KnowledgeFact(
+        type="quyết định",
+        subject="deploy scope",
+        statement="Ngày 12/6 sẽ Full Rollout Auto Settlement",
+    )])
+    m2 = db.save_meeting(_report(title="H2", date="2026-06-02", transcript="t2"))
+    nf = KnowledgeFact(
+        type="quyết định",
+        subject="Pilot expansion",
+        statement="Ngày 12/6 chỉ mở rộng Pilot, không Full Rollout",
+        source_meeting_id=m2,
+    )
+    db.save_facts(m2, [nf])
+
+    calls = {"n": 0}
+
+    def fake_chat(prompt, model, **k):
+        calls["n"] += 1
+        assert "Full Rollout Auto Settlement" in prompt
+        return json.dumps({"conflicts": [
+            {"index": 0,
+             "explanation": "Meeting trước chốt Full Rollout ngày 12/6, meeting sau giới hạn còn Pilot expansion và loại Full Rollout.",
+             "severity": "cao"}
+        ]})
+
+    monkeypatch.setattr(brain.llm, "chat", fake_chat)
+
+    found = brain.detect_contradictions([nf])
+
+    assert calls["n"] == 1
+    assert len(found) == 1
+    assert db.counts()["contradictions"] == 1
 
 
 def test_detect_contradictions_skips_duplicate_meeting_source(monkeypatch):

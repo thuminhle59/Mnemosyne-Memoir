@@ -76,14 +76,21 @@ def _effective_glossary(owner_id: str | None = None) -> str:
 
 def _correct_prompt(text: str, owner_id: str | None = None) -> str:
     return (
-        "Dưới đây là transcript do nhận dạng giọng nói tạo ra, có thể nghe nhầm DANH TỪ RIÊNG.\n"
-        f"Glossary tên đúng (CHỈ là gợi ý, có thể KHÔNG xuất hiện trong audio): {_effective_glossary(owner_id=owner_id)}\n"
-        "Nhiệm vụ: CHỈ sửa những danh từ riêng bị nghe nhầm cho khớp glossary KHI NGỮ CẢNH "
-        "cho thấy đúng là nó. Nếu transcript nói về chủ đề khác và không liên quan glossary, "
-        "phải giữ nguyên tên riêng đã nghe được như Nova, Merchant, Portal nếu chúng đã hợp lý. "
-        "GIỮ NGUYÊN, KHÔNG thêm thắt. Tuyệt đối KHÔNG diễn giải lại, KHÔNG tóm tắt, KHÔNG đổi "
-        "từ thường — giữ nguyên 100% nội dung, chỉ thay đúng các tên bị sai. "
-        f"{analyze.PRESERVE_ENGLISH_TERMS_RULE}\n"
+        "Dưới đây là transcript do nhận dạng giọng nói (Whisper) tạo ra. "
+        "Whisper đôi khi nghe nhầm DANH TỪ RIÊNG hoặc phiên âm tiếng Anh sang tiếng Việt.\n"
+        f"Glossary tên đúng (CHỈ là gợi ý, có thể KHÔNG xuất hiện trong audio): {_effective_glossary(owner_id=owner_id)}\n\n"
+        "NHIỆM VỤ — chỉ làm HAI việc sau, không làm gì khác:\n"
+        "1. SỬA danh từ riêng bị nghe nhầm khi ngữ cảnh cho thấy rõ đó là thuật ngữ trong glossary "
+        "(vd 'CloudTown' → 'Claw-a-thon', 'Mờ-chân' → 'Merchant').\n"
+        "2. KHÔI PHỤC từ tiếng Anh bị phiên âm sang tiếng Việt về dạng tiếng Anh gốc "
+        "(vd 'ô-tê-pê' → 'OTP', 'ca-na-ri' → 'canary', 'rô-lao' → 'rollout', "
+        "'đi-ploi' → 'deploy', 'phít-chờ flag' → 'feature flag', 'pi-lốt' → 'pilot', "
+        "'cô-mờ-lai-ần' → 'Compliance', 'đát-bô' → 'dashboard').\n\n"
+        "CẤM TUYỆT ĐỐI: KHÔNG diễn giải lại, KHÔNG tóm tắt, KHÔNG đổi từ thường, "
+        "KHÔNG phiên âm ngược (tiếng Anh → tiếng Việt), KHÔNG dịch thuật ngữ kỹ thuật. "
+        "Giữ nguyên 100% cấu trúc, độ dài, dấu câu và tên riêng đã hợp lý "
+        "(Nova, Merchant, Portal, Linh, Minh, An... nếu đã đúng thì không đổi).\n"
+        f"{analyze.PRESERVE_ENGLISH_TERMS_RULE}\n\n"
         'Trả về DUY NHẤT JSON: {"corrected": "<transcript đã sửa>"}\n\n'
         f"Transcript:\n{text}"
     )
@@ -117,11 +124,19 @@ def learn_glossary(guide_text: str, owner_id: str | None = None) -> list[str]:
 
 
 def _is_known_correction_source(term: str, owner_id: str | None = None) -> bool:
-    for pattern, _repl in [*config.STT_NORMALIZE, *config.STT_TERM_FIXES]:
+    def _norm(value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "", value.lower())
+
+    term_norm = _norm(term)
+    for pattern, repl in [*config.STT_NORMALIZE, *config.STT_TERM_FIXES]:
+        if term_norm == _norm(repl):
+            continue
         if re.search(pattern, term, flags=re.IGNORECASE):
             return True
     try:
-        for wrong, _target in db.glossary_fixes(owner_id=owner_id):
+        for wrong, target in db.glossary_fixes(owner_id=owner_id):
+            if term_norm == _norm(target):
+                continue
             pattern = r"\b" + re.escape(wrong).replace(r"\ ", r"[\s-]?") + r"\b"
             if re.search(pattern, term, flags=re.IGNORECASE):
                 return True
@@ -174,6 +189,15 @@ def correct_terms(text: str, owner_id: str | None = None) -> str:
     if not _keeps_protected_proper_nouns(text, out, owner_id=owner_id):
         return text
     return out
+
+
+def _correct_transcript_text(text: str, owner_id: str | None = None) -> str:
+    corrected = correct_terms(text, owner_id=owner_id) if owner_id is not None else correct_terms(text)
+    return (
+        transcribe.apply_corrections(corrected, owner_id=owner_id)
+        if owner_id is not None
+        else transcribe.apply_corrections(corrected)
+    )
 
 
 # ---------------------------------------------------------------- extract_facts
@@ -251,8 +275,11 @@ _MAX_CANDIDATES = 40
 
 _CONTRA_RULES = (
     "Coi là mâu thuẫn KHI cùng nói về MỘT việc/chủ đề mà giá trị/kết luận nghịch nhau "
-    "(không thể cùng đúng). KHÔNG coi là mâu thuẫn nếu: (a) là hai việc khác nhau; "
-    "(b) phát biểu mới chỉ CẬP NHẬT/CHI TIẾT HOÁ bình thường; (c) hai câu thực chất mô tả "
+    "(không thể cùng đúng). Quyết định mới đảo chiều, hủy, thu hẹp, mở rộng, đổi ngày, "
+    "đổi scope, hoặc đổi điều kiện rollout so với quyết định cũ là mâu thuẫn nếu hai trạng thái "
+    "không thể cùng đúng trong cùng mốc/scope. KHÔNG coi là mâu thuẫn nếu: (a) là hai việc khác nhau; "
+    "(b) phát biểu mới chỉ CẬP NHẬT/CHI TIẾT HOÁ bình thường mà không phủ định giá trị/kết luận cũ; "
+    "(c) hai câu thực chất mô tả "
     "CÙNG MỘT thực tế nhưng diễn đạt khác, hoặc một câu là SỐ LIỆU PHÁI SINH/tính lại từ "
     "câu kia (ví dụ 'trễ đến ngày 28/5' và 'trễ 8 ngày so với 20/5' là NHẤT QUÁN). "
     "Khi còn phân vân, KHÔNG coi là mâu thuẫn."
@@ -260,6 +287,11 @@ _CONTRA_RULES = (
 
 _PILOT_SELECTION_TOKENS = {
     "chon", "select", "selection", "shortlist", "lua", "danh", "sach", "onboard", "onboarding"
+}
+
+_CONTRADICTION_NOISY_TOKENS = {
+    "ngay", "thang", "nam", "meeting", "hop", "cuoc", "tuan", "hom", "qua", "nay", "truoc",
+    "moi", "cu", "chot", "quyet", "dinh", "ghi", "nhan", "yeu", "cau", "can", "van",
 }
 
 
@@ -295,6 +327,31 @@ def _same_contradiction_target(old, new: KnowledgeFact) -> bool:
     return True
 
 
+def _content_tokens(fact) -> set[str]:
+    tokens = _fact_tokens(fact)
+    return {t for t in tokens if t not in _CONTRADICTION_NOISY_TOKENS}
+
+
+def _candidate_matches_contradiction_topic(old, new: KnowledgeFact) -> bool:
+    """Cheap retrieval before the LLM.
+
+    Subject overlap is strongest, but extracted facts often name the same decision
+    differently across meetings. Fall back to content overlap so concrete scope/value
+    conflicts such as "Full Rollout" vs "không Full Rollout" still reach the LLM.
+    """
+    old_subject = retrieve_mod._tokens(getattr(old, "subject", ""))
+    new_subject = retrieve_mod._tokens(new.subject)
+    if old_subject & new_subject:
+        return True
+    overlap = _content_tokens(old) & _content_tokens(new)
+    if len(overlap) >= 2:
+        return True
+    # A single distinctive shared token can be enough when both statements carry
+    # opposite polarity around the same product/scope term.
+    distinctive = overlap - {"pilot", "phase", "scope", "deploy"}
+    return bool(distinctive and ("khong" in _plain_text(new.statement) or "khong" in _plain_text(getattr(old, "statement", ""))))
+
+
 def _verdict_is_actual_conflict(verdict: dict) -> bool:
     explanation = _plain_text(str(verdict.get("explanation", "")))
     if "khong mau thuan" in explanation or "khong phai mau thuan" in explanation:
@@ -319,9 +376,8 @@ def _batch_contra_prompt(new: KnowledgeFact, candidates: list, new_when: str = "
         "Hãy chỉ ra những phát biểu cũ MÂU THUẪN với phát biểu mới.\n"
         f"{_CONTRA_RULES}\n\n"
         f"DANH SÁCH CŨ:\n{listing}\n\n"
-        "Với mỗi mâu thuẫn, 'explanation' nêu rõ sự THAY ĐỔI theo thời gian: phát biểu CŨ (từ "
-        "cuộc họp TRƯỚC) nêu điều gì, phát biểu MỚI (cuộc họp sau, tức phát biểu gốc ở trên) "
-        "thay đổi thành gì — viết 1 câu theo dạng 'Trước: X → Nay: Y'. "
+        "Với mỗi mâu thuẫn, 'explanation' viết MỘT câu tự nhiên, nêu rõ hai claim không thể cùng đúng "
+        "và tác động của thay đổi. KHÔNG dùng format máy móc 'Trước: X → Nay: Y'. "
         "'severity' theo mức ảnh hưởng. Nếu không có cái nào mâu thuẫn, trả về danh sách rỗng.\n"
         'Trả về DUY NHẤT JSON: {"conflicts": [{"index": int, "explanation": str, '
         '"severity": "cao"|"trung bình"|"thấp"}]}'
@@ -349,13 +405,12 @@ def detect_contradictions(new_facts: list[KnowledgeFact]) -> list[Contradiction]
         # Exact-subject matching misses conflicts when the model words the same topic
         # differently across meetings ("ngày launch" vs "ngày ra mắt"); the LLM verdict
         # below filters out coincidental token overlaps.
-        nf_tokens = retrieve_mod._tokens(nf.subject)
         new_meeting = db.get_meeting(nf.source_meeting_id)
         new_date = (new_meeting.date or "") if new_meeting else ""
         candidates = [
             f for f in all_active
             if f.meeting_id != nf.source_meeting_id
-            and (retrieve_mod._tokens(f.subject) & nf_tokens)
+            and _candidate_matches_contradiction_topic(f, nf)
             and _same_contradiction_target(f, nf)
             and not _same_meeting_source(db.get_meeting(f.meeting_id), new_meeting)
             and f.statement.strip() != nf.statement.strip()   # identical restatement is no conflict
@@ -552,6 +607,7 @@ def ingest(text: str | None = None, audio: bytes | None = None,
     ah = None
     duplicate_of = None
     cloned_facts: list[KnowledgeFact] | None = None
+    text_corrected = False
     if text is None:
         if not audio:
             raise ValueError("ingest needs text or audio")
@@ -595,12 +651,7 @@ def ingest(text: str | None = None, audio: bytes | None = None,
                 t0 = time_cursor
                 time_cursor += d
                 t = transcribe.transcribe(c, filename="audio.wav", language=language)
-                t = correct_terms(t, owner_id=owner_id) if owner_id is not None else correct_terms(t)
-                t = (
-                    transcribe.apply_corrections(t, owner_id=owner_id)
-                    if owner_id is not None
-                    else transcribe.apply_corrections(t)
-                )
+                t = _correct_transcript_text(t, owner_id=owner_id)
                 if not t:
                     continue
                 if parts:
@@ -610,12 +661,15 @@ def ingest(text: str | None = None, audio: bytes | None = None,
                 char_cursor += len(t)
                 parts.append(t)
             text = "\n".join(parts)
+            text_corrected = True
             duration_sec = int(time_cursor) or None
             chunk_map = json.dumps(chunk_entries) if chunk_entries else None
     if not text.strip():
         raise ValueError("empty transcript")
 
     if cloned_facts is None:
+        if not text_corrected:
+            text = _correct_transcript_text(text, owner_id=owner_id)
         report = analyze.analyze(text, date=date)
         if title:
             report.title = title

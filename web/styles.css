@@ -57,6 +57,7 @@ button { cursor: pointer; }
 .app-shell.sidebar-collapsed .library-head > div,
 .app-shell.sidebar-collapsed .library-search,
 .app-shell.sidebar-collapsed .time-filter,
+.app-shell.sidebar-collapsed .sidebar-dnd-note,
 .app-shell.sidebar-collapsed .meeting-list,
 .app-shell.sidebar-collapsed .terminology,
 .app-shell.sidebar-collapsed .memoir-signature { display: none; }

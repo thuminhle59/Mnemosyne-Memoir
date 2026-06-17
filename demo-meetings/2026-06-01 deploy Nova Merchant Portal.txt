@@ -1,76 +1,76 @@
-[00:00] Mở đầu cập nhật pilot
-Linh: Hôm nay là ngày 1 tháng 6 năm 2026. Cuộc họp tập trung vào pilot Auto Settlement và quyết định deploy tiếp theo.
-Minh: Backend đã hoàn tất worker retry và idempotency, nhưng reconciliation job còn một lỗi timezone khi merchant ở múi giờ khác.
-An: QA hoàn tất 86 phần trăm regression, còn lỗi timezone và hai case callback duplicate.
+[00:00] Cập nhật tổng quan
+Linh: Hôm nay là ngày 1 tháng 6 năm 2026. Cuộc họp tập trung vào tiến độ pilot Auto Settlement và quyết định deploy tiếp theo.
+Minh: Backend đã hoàn tất worker retry và idempotency. Tuy nhiên, reconciliation job còn một lỗi timezone khi merchant ở múi giờ khác.
+An: QA hoàn tất 86% regression. Còn tồn tại lỗi timezone và hai case callback duplicate chưa xử lý.
 
 [02:00] Tiến độ từ tháng 5 đến nay
-Linh: So với baseline ngày 1 tháng 5, UAT đáng ra xong ngày 20 tháng 5 nhưng thực tế kéo đến ngày 28 tháng 5.
-Minh: Pilot bắt đầu hôm nay với 18 merchant, thấp hơn kế hoạch 30 merchant vì Support chưa training xong.
-An: QA vẫn coi đây là pilot hạn chế, chưa đủ dữ liệu để gọi là go-live ready.
+Linh: So với baseline ngày 1/5, UAT dự kiến hoàn thành ngày 20/5 nhưng thực tế kéo đến ngày 28/5.
+Minh: Pilot khởi động hôm nay với 18 merchant, thấp hơn kế hoạch 30 merchant do Support chưa hoàn thành training.
+An: QA đánh giá đây vẫn là pilot hạn chế — chưa đủ dữ liệu production để tuyên bố go-live ready.
 
 [04:00] Conflict về ngày deploy
-Linh: Marketing muốn công bố Auto Settlement sớm hơn vào ngày 12 tháng 6 để kịp chiến dịch merchant.
-Minh: Nếu bỏ canary 20 phần trăm ngày 15 tháng 6 và chuyển thành full rollout ngày 12 tháng 6, kỹ thuật vẫn có thể bật feature flag toàn bộ.
-An: Em không đồng ý. Cuộc họp ngày 1 tháng 5 đã chốt canary 20 phần trăm ngày 15 tháng 6, không phải full rollout ngày 12 tháng 6.
-Quyết định ghi nhận: Có mâu thuẫn: đề xuất mới là full rollout ngày 12 tháng 6, khác baseline canary 20 phần trăm ngày 15 tháng 6.
+Linh: Marketing đề xuất công bố Auto Settlement vào ngày 12/6 để kịp chiến dịch merchant.
+Minh: Nếu bỏ canary 20% ngày 15/6 và chuyển sang full rollout ngày 12/6, kỹ thuật vẫn có thể bật feature flag toàn bộ.
+An: Em không đồng ý. Cuộc họp ngày 1/5 đã chốt canary 20% ngày 15/6 — không phải full rollout ngày 12/6.
+Quyết định ghi nhận: Có conflict giữa đề xuất mới full rollout ngày 12/6 và baseline canary 20% ngày 15/6.
 
 [06:00] Conflict về OTP
-Linh: Một điểm nữa là Compliance vừa yêu cầu bật mandatory OTP ngay khi merchant vào Auto Settlement.
-Minh: Điều này trái với quyết định tháng 5 là hoãn mandatory OTP khỏi phase 1.
-An: QA ghi nhận đây là conflict thứ hai: phase 1 trước đó chỉ audit log, nay lại yêu cầu OTP bắt buộc.
-Quyết định ghi nhận: Yêu cầu mới bật mandatory OTP phase 1 đang mâu thuẫn với quyết định hoãn OTP ở cuộc họp ngày 1 tháng 5.
+Linh: Compliance vừa yêu cầu bật mandatory OTP ngay khi merchant tham gia Auto Settlement.
+Minh: Yêu cầu này trái với quyết định tháng 5 là hoãn mandatory OTP khỏi phase 1.
+An: QA ghi nhận đây là conflict thứ hai: phase 1 trước đây chỉ yêu cầu audit log, nay phát sinh thêm OTP bắt buộc.
+Quyết định ghi nhận: Yêu cầu mới bật mandatory OTP phase 1 đang mâu thuẫn với quyết định hoãn OTP từ cuộc họp ngày 1/5.
 
 [08:00] Đánh giá rủi ro rollout sớm
-Linh: Nếu full rollout ngày 12 tháng 6, rủi ro lớn nhất là lỗi timezone chưa đủ dữ liệu production.
-Minh: Em cũng lo latency summary p95 đang 2.4 giây, vượt tiêu chí 2 giây đã đặt trước.
-An: QA đề xuất không dùng chữ full rollout cho ngày 12 tháng 6; chỉ có thể mở rộng pilot lên 50 merchant.
+Linh: Rủi ro lớn nhất của full rollout ngày 12/6 là lỗi timezone chưa có đủ dữ liệu production để xác nhận.
+Minh: Latency summary p95 hiện đang ở 2.4 giây, vượt tiêu chí 2 giây đã đặt ra.
+An: QA đề xuất không gọi là full rollout cho ngày 12/6 — tối đa chỉ có thể mở rộng pilot lên 50 merchant.
 
-[10:00] Tiến độ kỹ thuật
-Linh: Minh cập nhật tiến độ từ hôm nay đến ngày 10 tháng 6.
-Minh: Ngày 3 tháng 6 fix timezone, ngày 5 tháng 6 chạy lại duplicate callback, ngày 7 tháng 6 optimize query summary.
-An: QA cần build mới trước sáng ngày 6 tháng 6 để retest cuối tuần.
+[10:00] Lịch kỹ thuật đến ngày 10/6
+Linh: Minh cập nhật timeline từ hôm nay đến ngày 10/6.
+Minh: Ngày 3/6 fix timezone, ngày 5/6 chạy lại duplicate callback, ngày 7/6 optimize query summary.
+An: QA cần build mới trước sáng ngày 6/6 để retest trong cuối tuần.
 
 [12:00] Tiến độ vận hành
-Linh: Support chưa training xong vì tài liệu merchant vẫn thiếu phần xử lý lệch tiền.
-Minh: Tech sẽ thêm mô tả trạng thái settlement failed và retry before ngày 4 tháng 6.
-An: QA và Support sẽ dry run kịch bản merchant gọi hotline ngày 8 tháng 6.
+Linh: Support chưa hoàn thành training do tài liệu merchant vẫn thiếu phần xử lý lệch tiền.
+Minh: Tech sẽ bổ sung mô tả trạng thái settlement failed và hướng dẫn retry trước ngày 4/6.
+An: QA và Support sẽ dry run kịch bản merchant gọi hotline vào ngày 8/6.
 
-[14:00] Quyết định tạm thời
-Linh: Chị không muốn bỏ qua cảnh báo QA, nhưng cũng cần phản hồi Marketing.
-Minh: Đề xuất tạm thời: ngày 12 tháng 6 chỉ mở rộng pilot, không full rollout, còn canary production giữ sau đó.
-An: QA đồng ý với điều kiện phải ghi rõ đây là mở rộng pilot, không thay thế quyết định canary chính thức.
+[14:00] Quyết định tạm thời về rollout
+Linh: Chị không muốn bỏ qua cảnh báo của QA, nhưng cũng cần có phản hồi cho Marketing.
+Minh: Đề xuất: ngày 12/6 chỉ mở rộng pilot, không full rollout. Canary production giữ nguyên lịch sau đó.
+An: QA đồng ý với điều kiện ghi rõ đây là mở rộng pilot — không thay thế quyết định canary chính thức.
 
 [16:00] OTP và trải nghiệm merchant
-Linh: Về OTP, nếu bật mandatory ngay thì merchant pilot có thể gặp lỗi đăng nhập lần đầu.
-Minh: Có thể bật OTP optional kèm audit log trong pilot mở rộng, sau đó mới quyết định mandatory.
-An: QA cần test cả hai nhánh optional OTP và no OTP để tránh đổi phút chót.
+Linh: Nếu bật mandatory OTP ngay, merchant trong pilot mở rộng có thể gặp lỗi đăng nhập lần đầu.
+Minh: Có thể bật OTP optional kèm audit log trong giai đoạn pilot mở rộng, sau đó mới quyết định mandatory.
+An: QA cần test cả hai nhánh optional OTP và no OTP để tránh thay đổi phút chót.
 
-[18:00] Rollback
-Linh: Rollback window 2 giờ vẫn còn phù hợp không?
-Minh: Nếu full rollout thì 2 giờ không đủ, nhưng nếu pilot hoặc canary thì feature flag per merchant vẫn xử lý được trong 2 giờ.
-An: QA giữ rollback window 2 giờ cho pilot/canary, nhưng không chấp nhận cho full rollout.
+[18:00] Rollback window
+Linh: Rollback window 2 giờ có còn phù hợp không?
+Minh: Với full rollout thì 2 giờ không đủ. Với pilot hoặc canary, feature flag per merchant vẫn xử lý được trong khung thời gian đó.
+An: QA chấp nhận rollback window 2 giờ cho pilot/canary, nhưng không chấp nhận cho full rollout.
 
-[20:00] Tiến độ đo lường
-Linh: Từ ngày 1 đến ngày 7 tháng 6, team sẽ đo latency summary, lệch settlement, và tỷ lệ retry callback.
-Minh: Nếu đến ngày 7 tháng 6 p95 vẫn trên 2 giây, không mở rộng pilot ngày 12 tháng 6.
-An: QA cần dashboard số liệu hằng ngày từ ngày 2 tháng 6.
+[20:00] Tiêu chí đo lường
+Linh: Từ ngày 1 đến ngày 7/6, team đo latency summary, lệch settlement và tỷ lệ retry callback.
+Minh: Nếu p95 vẫn trên 2 giây đến ngày 7/6, không mở rộng pilot ngày 12/6.
+An: QA cần dashboard số liệu hằng ngày từ ngày 2/6.
 
-[22:00] Trạng thái go no-go
-Linh: Theo tiêu chí tháng 5, hiện tại chưa đạt go no-go vì regression chưa xong, latency vượt ngưỡng, Support chưa training.
+[22:00] Trạng thái go/no-go
+Linh: Theo tiêu chí tháng 5, hiện tại chưa đạt go/no-go: regression chưa xong, latency vượt ngưỡng, Support chưa training.
 Minh: Tech cần thêm bốn ngày để fix và đo lại.
-An: QA sẽ gửi báo cáo go no-go sơ bộ ngày 8 tháng 6.
+An: QA sẽ gửi báo cáo go/no-go sơ bộ vào ngày 8/6.
 
-[24:00] Chủ sở hữu hành động
-Linh: Minh owner fix timezone và latency, An owner retest và báo cáo go no-go, chị owner phản hồi Marketing.
-Minh: Em nhận deadline ngày 3 tháng 6 timezone, ngày 7 tháng 6 latency.
-An: Em nhận deadline ngày 8 tháng 6 báo cáo go no-go và training checklist.
+[24:00] Phân công action items
+Linh: Minh owner fix timezone và latency, An owner retest và báo cáo go/no-go, Linh phản hồi Marketing.
+Minh: Deadline timezone ngày 3/6, latency ngày 7/6.
+An: Deadline báo cáo go/no-go và training checklist ngày 8/6.
 
 [26:00] Tóm tắt conflict
-Linh: Ghi rõ vào biên bản: có conflict với cuộc họp 1 về ngày deploy và phạm vi rollout.
-Minh: Ghi thêm conflict về OTP: trước đó hoãn mandatory OTP khỏi phase 1, hôm nay Compliance yêu cầu bật ngay.
-An: QA sẽ đánh dấu hai conflict này để meeting ngày 10 tháng 6 phải resolve.
+Linh: Ghi vào biên bản: có conflict với cuộc họp ngày 1/5 về ngày deploy và phạm vi rollout.
+Minh: Ghi thêm conflict OTP: trước đây đã hoãn mandatory OTP khỏi phase 1, hôm nay Compliance yêu cầu bật ngay.
+An: QA đánh dấu hai conflict này để cuộc họp ngày 10/6 resolve dứt điểm.
 
 [28:00] Kết luận
-Linh: Kết luận tạm thời: không full rollout ngày 12 tháng 6, chỉ xem xét mở rộng pilot nếu đạt điều kiện ngày 8 tháng 6.
-Minh: Canary 20 phần trăm ngày 15 tháng 6 chưa bị hủy, nhưng đang có nguy cơ trễ nếu latency không giảm.
-An: Cuộc họp ngày 10 tháng 6 sẽ chốt quyết định cuối cùng.
+Linh: Kết luận tạm thời: không full rollout ngày 12/6. Chỉ xem xét mở rộng pilot nếu đạt điều kiện đến ngày 8/6.
+Minh: Canary 20% ngày 15/6 chưa bị hủy, nhưng có nguy cơ trễ nếu latency không cải thiện.
+An: Cuộc họp ngày 10/6 sẽ chốt quyết định cuối cùng.

@@ -24,9 +24,15 @@ _SCHEMA_HINT = """{
 
 PRESERVE_ENGLISH_TERMS_RULE = (
     "NGUYÊN TẮC THUẬT NGỮ: GIỮ NGUYÊN chính xác tiếng Anh, tên riêng, tên sản phẩm, "
-    "tên dự án, acronym và code term xuất hiện trong transcript; KHÔNG phiên âm, "
-    "KHÔNG dịch, KHÔNG Việt hoá capitalization/hyphen. Ví dụ phải giữ đúng: "
-    "Merchant, AgentBase, OpenClaw, MCP Server, QA, UAT, API, Pilot, Canary, Settlement."
+    "tên dự án, acronym và code term xuất hiện trong transcript. "
+    "TUYỆT ĐỐI KHÔNG phiên âm sang tiếng Việt (vd ĐỪNG viết 'ô-tê-pê' thay cho 'OTP', "
+    "'ca-na-ri' thay cho 'canary', 'rô-lao' thay cho 'rollout', 'pi-lốt' thay cho 'pilot', "
+    "'đi-ploi' thay cho 'deploy', 'phít-chờ flag' thay cho 'feature flag'). "
+    "KHÔNG dịch sang tiếng Việt (vd ĐỪNG dịch 'merchant' thành 'thương nhân'). "
+    "KHÔNG Việt hoá capitalization/hyphen. "
+    "Ví dụ phải giữ đúng: Merchant, Settlement, AgentBase, OpenClaw, MCP Server, "
+    "QA, UAT, OTP, API, Pilot, Canary, Rollout, Deploy, Feature Flag, Compliance, Dashboard, "
+    "Reconciliation, Idempotency, Callback, Retry, Latency, Timezone, Hotline."
 )
 
 

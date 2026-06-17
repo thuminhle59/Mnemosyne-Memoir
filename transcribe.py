@@ -11,6 +11,27 @@ import uuid
 import config
 
 
+_CANONICAL_TERMS = [
+    "Nova Merchant Portal",
+    "Auto Pass Settlement",
+    "Full Rollout",
+    "Claw-a-thon",
+    "MCP Server",
+    "AgentBase",
+    "GreenNode",
+    "OpenClaw",
+    "ZaloPay",
+    "Mnemosyne",
+    "Settlement",
+    "Merchant",
+    "Portal",
+    "Nova",
+    "Auto Pass",
+    "Pilot",
+    "Canary",
+]
+
+
 def apply_corrections(text: str, owner_id: str | None = None) -> str:
     """Deterministic regex cleanup, run AFTER the LLM correction (brain.correct_terms):
       NORMALIZE  — always: canonical spelling (ZaloPay, AgentBase...).
@@ -27,7 +48,66 @@ def apply_corrections(text: str, owner_id: str | None = None) -> str:
         for wrong, term in _glossary_fixes(owner_id=owner_id):
             pat = r"\b" + re.escape(wrong).replace(r"\ ", r"[\s-]?") + r"\b"
             text = re.sub(pat, term, text, flags=re.IGNORECASE)
+    text = _strip_phonetic_parentheticals(text, owner_id=owner_id)
     return text
+
+
+def _strip_phonetic_parentheticals(text: str, owner_id: str | None = None) -> str:
+    canonical_terms = sorted(_CANONICAL_TERMS + [term for _wrong, term in _glossary_fixes(owner_id=owner_id)],
+                             key=len, reverse=True)
+    if not canonical_terms:
+        return text
+    term_pattern = "|".join(re.escape(term) for term in canonical_terms if term)
+
+    def repl(match: re.Match) -> str:
+        term = match.group("term")
+        note = match.group("note").strip()
+        if _same_canonical_text(term, note) or _looks_like_phonetic_note(note, owner_id=owner_id):
+            return term
+        return match.group(0)
+
+    return re.sub(
+        rf"(?P<term>{term_pattern})\s*\((?P<note>[^)]{{1,80}})\)",
+        repl,
+        text,
+        flags=re.IGNORECASE,
+    )
+
+
+def _same_canonical_text(left: str, right: str) -> bool:
+    norm = lambda value: re.sub(r"[^a-z0-9]+", "", value.lower())
+    return norm(left) == norm(right)
+
+
+_PHONETIC_VI_PATTERNS = [
+    # hyphenated syllable-by-syllable renderings: "ô-tê-pê", "ca-na-ri", "pi-lốt"
+    r"^[a-zA-ZÀ-ỹ]{1,4}(?:[\s-][a-zA-ZÀ-ỹ]{1,4}){1,6}$",
+    # Vietnamese diacritics mixed with Latin (typical phiên âm artifact)
+    r"[ăâêôơưđ].*[a-z]|[a-z].*[ăâêôơưđ]",
+    # repeated short syllables separated by dash/space
+    r"\b\w{1,4}[\s-]\w{1,4}[\s-]\w{1,4}\b",
+]
+
+
+def _looks_like_phonetic_note(note: str, owner_id: str | None = None) -> bool:
+    if re.search(r"\d", note):
+        return False
+    for pattern, _repl in [*config.STT_NORMALIZE, *config.STT_TERM_FIXES]:
+        if re.search(pattern, note, flags=re.IGNORECASE):
+            return True
+    try:
+        for wrong, _term in _glossary_fixes(owner_id=owner_id):
+            pat = r"\b" + re.escape(wrong).replace(r"\ ", r"[\s-]?") + r"\b"
+            if re.search(pat, note, flags=re.IGNORECASE):
+                return True
+    except Exception:  # noqa: BLE001 - DB not ready / no glossary
+        pass
+    # Catch generic Vietnamese phonetic annotation patterns (syllable-by-syllable)
+    note_stripped = note.strip()
+    for pat in _PHONETIC_VI_PATTERNS:
+        if re.search(pat, note_stripped, flags=re.IGNORECASE):
+            return True
+    return False
 
 
 def _glossary_fixes(owner_id: str | None = None) -> list[tuple[str, str]]:

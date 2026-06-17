@@ -998,6 +998,7 @@ def test_left_sidebar_is_collapsible_and_meeting_cards_hide_transcript_content()
     assert "function toggleSidebar()" in js
     assert ".app-shell.sidebar-collapsed .library" in css
     assert ".app-shell.sidebar-collapsed .workspace" in css
+    assert ".app-shell.sidebar-collapsed .sidebar-dnd-note" in css
     assert "m.summary || m.source_file || \"No summary yet\"" not in js
     assert 'class="meeting-source-line"' not in js
 
