@@ -12,10 +12,7 @@
 <br />
 
 <p>
-  Memoir là ứng dụng ghi nhớ theo quy trình các cuộc họp. 
-</p>
-<p>
-  Thay vì chỉ tóm tắt một meeting riêng lẻ, Memoir lưu lại meeting memory theo chuỗi: quyết định nào đã được chốt, action nào còn mở, evidence nào đang hỗ trợ, và nội dung mới có mâu thuẫn với các meeting trước hay không.
+  Memoir là ứng dụng ghi nhớ theo quy trình các cuộc họp. Thay vì chỉ tóm tắt một meeting riêng lẻ, Memoir lưu lại meeting memory theo chuỗi: quyết định nào đã được chốt, action nào còn mở, evidence nào đang hỗ trợ, và nội dung mới có mâu thuẫn với các meeting trước hay không.
 </p>
 <p>
 Từ đó, người dùng có thể đặt câu hỏi về nội dung cuộc họp hoặc tất cả những cuộc họp liên quan, gửi email đến team member để nhắc action cần làm, và nhận cảnh báo khi phát hiện mâu thuẫn giữa các phiên họp khác nhau.
