@@ -1,3 +1,24 @@
+<br />
+
+<p align="center">
+  <a>
+    <img src="https://github.com/thuminhle59/Mnemosyne-Memoir/blob/main/assets/Mnemosyne.png" alt="Logo" width="180" height="140">
+  </a>
+  <h3 align="center">Logo</h3>
+  <p align="center">
+    Memory · Engine · Managing · Organizational · Intelligence · Resolution
+    <br />
+    <a href="youtube.com"><strong>Product Demo</strong></a>
+    <br />
+    <br />
+    <a href="endpoint.com"><strong>Try it yourself»</strong></a>
+    <br />
+    <br />
+  </p>
+</p>    
+
+ <br />
+
 # Memoir
 
 Memoir is a meeting-memory app for teams that need decisions, actions, evidence, and contradictions to survive across meetings. It ingests transcripts, audio, or video; stores every meeting in a local memory database; then lets users review the selected meeting and ask questions across the same topic/group.
