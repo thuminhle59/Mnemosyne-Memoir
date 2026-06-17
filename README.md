@@ -26,7 +26,7 @@
 
 > Built for **GreenNode Claw-a-thon 2026** as a Custom Agent on **GreenNode AgentBase**
 
-<img src="https://github.com/thuminhle59/Mnemosyne-Memoir/blob/main/assets/memoir_explainer-screenshot.png" alt="Logo" width="500" height="450">
+<img src="https://github.com/thuminhle59/Mnemosyne-Memoir/blob/main/assets/memoir_explainer-screenshot.png" alt="Logo" width="1000" height="800">
 
 > **Data Compliance**: use synthetic, staged, public, or personal demo data only. Do not upload private customer meetings, internal recordings, or PII into a public demo runtime.
 
