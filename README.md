@@ -194,4 +194,6 @@ Local secrets nên để trong `.env` và không commit file này.
 
 ## Thank You
 
- Nếu bạn thích agent của mình, hãy ủng hộ bằng cách cho vote cho team Mnemosyne tại GreenNode Claw-a-thon 2026 và tặng repo này 1 sao nhé :)
+Cảm ơn BTC GreenNode, VNG và Zalopay đã tạo cơ hội cho VNG starters học hỏi và tham gia cuộc thi xây dựnng AI Agent tại GreenNode Claw-a-thon 2026.
+
+Nếu bạn thích idea của mình, hãy ủng hộ bằng cách cho vote cho team Mnemosyne nhé :)
