@@ -14,10 +14,9 @@
 Memoir là ứng dụng ghi nhớ quy trình họp, đóng vai trò như một bộ nhớ của tổ chức, giúp ghi nhớ toàn bộ lịch sử dự án, tóm tắt quá trình cuộc họp, phát hiện thay đổi và mẫu thuẫn theo thời gian, gợi nhắc quyết định bị lãng quên và trả lời câu hỏi xuyên suốt toàn bộ lịch sử.
 </p>
 
-> Built for **GreenNode Claw-a-thon 2026** as a Custom Agent on **GreenNode AgentBase**
-
 <img src="https://github.com/thuminhle59/Mnemosyne-Memoir/blob/main/assets/memoir_explainer-screenshot.png" alt="Logo" width="1000" height="800">
 
+> Built for **GreenNode Claw-a-thon 2026** as a Custom Agent on **GreenNode AgentBase**
 > **Data Compliance**: use synthetic, staged, public, or personal demo data only. Do not upload private customer meetings, internal recordings, or PII into a public demo runtime.
 
 <p align="center">
