@@ -11,7 +11,7 @@
  <br />
 
 <p>
-**Memoir** là ứng dụng ghi nhớ quy trình họp, đóng vai trò như một bộ nhớ của tổ chức, giúp ghi nhớ toàn bộ lịch sử dự án, tóm tắt quá trình cuộc họp, phát hiện thay đổi và mẫu thuẫn theo thời gian, gợi nhắc quyết định bị lãng quên và trả lời câu hỏi xuyên suốt toàn bộ lịch sử.
+Memoir là ứng dụng ghi nhớ quy trình họp, đóng vai trò như một bộ nhớ của tổ chức, giúp ghi nhớ toàn bộ lịch sử dự án, tóm tắt quá trình cuộc họp, phát hiện thay đổi và mẫu thuẫn theo thời gian, gợi nhắc quyết định bị lãng quên và trả lời câu hỏi xuyên suốt toàn bộ lịch sử.
 </p>
 
 > Built for **GreenNode Claw-a-thon 2026** as a Custom Agent on **GreenNode AgentBase**
