@@ -25,9 +25,9 @@ Memoir is a meeting-memory app for teams that need decisions, actions, evidence,
 
 The app is built for GreenNode Claw-a-thon 2026 and can run both as a local FastAPI web app and as a GreenNode AgentBase Custom Agent.
 
-<img src="https://github.com/thuminhle59/Mnemosyne-Memoir/blob/main/assets/memoir_explainer-screenshot.png" alt="Logo" width="160" height="120">
+<img src="https://github.com/thuminhle59/Mnemosyne-Memoir/blob/main/assets/memoir_explainer-screenshot.png" alt="Logo">
 
-> Data note: use synthetic, staged, public, or personal demo data only. Do not upload private customer meetings, internal recordings, or PII into a public demo runtime.
+> **Data Compliance**: use synthetic, staged, public, or personal demo data only. Do not upload private customer meetings, internal recordings, or PII into a public demo runtime.
 
 ## What It Does
 
