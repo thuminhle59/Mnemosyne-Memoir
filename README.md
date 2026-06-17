@@ -36,37 +36,19 @@ Memoir là ứng dụng ghi nhớ quyết định từ các cuộc họp. Thay v
     <li><a href="#backend-modules">Backend Modules</a></li>
     <li><a href="#frontend-modules">Frontend Modules</a></li>
     <li><a href="#project-layout">Project Layout</a></li>
-    <li><a href="#requirements">Requirements</a></li>
     <li><a href="#tài-liệu-liên-quan">Tài Liệu Liên Quan</a></li>
   </ol>
 </details>
 
-## Memoir Làm Gì
+## How Memoir Works
 
-Memoir giúp team biến transcript, audio, hoặc video meeting thành bộ nhớ quyết định có thể tra cứu và so sánh lại về sau.
+- Người dùng upload file audio, transcript hoặc live-recording cuộc họp.
+- Memoir tự động trích xuất quyết định, mâu thuẫn, actions, risks, và lưu toàn bộ vào bộ nhớ.
+- Tóm tắt cuộc họp, bắt contradiction: chỉ ra khi quyết định mới mâu thuẫn với meeting trước, kèm timestamp để truy vết.
+- Q&A theo context: trả lời trong phạm vi group/topic của meeting đang chọn.
+- Hỗ trợ assign action và gửi email follow-up nhắc nhở.
 
-- Ingest file `.txt`, `.md`, audio, hoặc video bằng chunked upload.
-- Transcribe media bằng STT, sửa terminology/tên riêng, rồi extract structured memory.
-- Lưu meetings, transcript, decisions, actions, facts/evidence, risks, contradictions, resurfaced items, terminology, playback audio và group metadata vào SQLite.
-- Group meetings theo `group_title`; nếu data cũ chưa có `group_title`, app fallback theo title hiện tại.
-- Cho phép kéo thả meeting card vào group khác và double-click group title để rename inline.
-- Tách dữ liệu local theo browser owner bằng `localStorage` và header `X-Memoir-Owner`.
-- Hiển thị các tab `Summary`, `Actions`, và `Evidence` cho meeting đang chọn.
-- Q&A chỉ trả lời trong phạm vi group/topic của meeting đang chọn.
-- Hỗ trợ assign action, lưu owner/email và gửi email follow-up nếu đã cấu hình SMTP.
-- Cho phép edit terminology, save, rồi refresh meeting để reprocess transcript và derived memory theo terminology mới.
-
-## Điểm Khác Biệt
-
-Memoir khác các meeting summarizer thông thường ở chỗ nó tập trung vào **decision memory** thay vì chỉ tạo một bản tóm tắt.
-
-- **Nhớ theo chuỗi meeting**: Memoir so sánh meeting đang chọn với các meeting trước trong cùng group/topic.
-- **Bắt contradiction có ngữ cảnh**: contradictions là mâu thuẫn giữa các claim/quyết định cụ thể, có cite meeting number để truy vết.
-- **Decision-first**: UI ưu tiên decisions, actions, evidence và risks quan trọng nhất, tránh summary dài và khó scan.
-- **Terminology-aware**: user có thể sửa glossary/terminology sau ingest và refresh lại meeting mà không cần upload lại file.
-- **Q&A đúng phạm vi**: câu trả lời chỉ dựa trên meetings cùng group/topic, giảm việc lẫn nội dung giữa các topic.
-- **Workflow sau meeting**: action có owner, email, status và deadline để follow up tiếp sau khi họp.
-- **Cùng một backend cho local và deploy**: FastAPI app local và AgentBase runtime dùng chung core ingest/reasoning.
+> Memoir nhớ theo chuỗi meeting: so sánh meeting hiện tại với lịch sử dự án, không chỉ xử lý từng meeting rời rạc.
 
 ## Architecture
 
@@ -89,8 +71,6 @@ brain.py
   +--> db.py                        SQLite memory store
   +--> mailer.py                    optional action email
 ```
-
-Khi deploy lên AgentBase, `main.py` expose `/health`, `/invocations` và mount cùng FastAPI web app tại `/`.
 
 ## Backend Modules
 
@@ -141,77 +121,15 @@ Mnemosyne/
   docs/               Product specs and handoff notes
 ```
 
-## Requirements
-
-Để clone repo và chạy/build app ở local, máy cần có:
-
-- Python 3.12.
-- `ffmpeg` có sẵn trên `PATH` để xử lý audio/video ingest.
-- OpenAI-compatible LLM/STT endpoint và API key.
-- Docker nếu muốn build container hoặc deploy lên AgentBase.
-- SMTP credentials nếu muốn dùng tính năng gửi email assignment.
-
-Setup local:
-
-```bash
-git clone <repo-url>
-cd <repo-folder>/Mnemosyne
-
-python3.12 -m venv venv
-source venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
-
-cp .env.example .env
-```
-
-Sau đó mở `.env` và điền các giá trị tối thiểu:
-
-```bash
-LLM_API_KEY=<your-api-key>
-LLM_BASE_URL=<openai-compatible-base-url>
-STT_URL=<openai-compatible-stt-url>
-STT_MODEL=<stt-model>
-DATABASE_URL=sqlite:///mnemosyne.db
-```
-
-Chạy app local:
-
-```bash
-uvicorn server:app --host 127.0.0.1 --port 18093
-```
-
-Mở browser tại:
-
-```text
-http://127.0.0.1:18093/
-```
-
-Chạy test:
-
-```bash
-PYTHONPATH=. pytest -q
-```
-
-Build Docker image:
-
-```bash
-docker build --platform linux/amd64 -t memoir:local .
-docker run --rm -p 8080:8080 --env-file .env memoir:local
-```
-
-Sau khi container chạy, kiểm tra:
-
-```text
-http://127.0.0.1:8080/health
-```
-
-Local secrets nên để trong `.env` và không commit file này.
-
-## Tài Liệu Liên Quan
+## Related Docs
 
 - `docs/SPEC.md` - product và technical specification hiện tại.
 - `docs/FRONTEND_HANDOFF.md` - frontend/API handoff notes.
 - `.env.example` - template cấu hình runtime local.
 - `Dockerfile` - container build tương thích AgentBase.
 - `tests/` - executable contracts cho backend, frontend markup/CSS, mailer và memory behavior.
+
+# Thank You
+Xin cảm ơn GreenNode, VNG và Zalopay đã tạo cơ hội cho VNG starters học hỏi và tham gia cuộc thi xây dựng AI Agent tại GreenNode Claw-a-thon 2026.
+
+Nếu bạn thích idea của mình, hãy vote cho team Mnemosyne tại Claw-a-thon nhé :)
