@@ -34,7 +34,6 @@
 <details open="open">
   <summary><h2 style="display: inline-block">Table of Contents</h2></summary>
   <ol>
-    <li><a href="#description">Description</a></li>
     <li><a href="#what-it-does">What It Does</a></li>
     <li><a href="#architecture">Architecture</a></li>
     <li><a href="#project-layout">Project Layout/a></li>
