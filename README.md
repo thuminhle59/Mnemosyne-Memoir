@@ -75,8 +75,6 @@ brain.py
   +--> mailer.py                    optional action email
 ```
 
-AgentBase uses `main.py`, which exposes the agent invocation contract and mounts the same FastAPI web app at `/`.
-
 ## Project Layout
 
 ```text
