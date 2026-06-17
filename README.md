@@ -52,24 +52,13 @@
 Memoir giúp team biến transcript, audio, hoặc video meeting thành bộ nhớ quyết định có thể tra cứu và so sánh lại về sau.
 
 - Ingest file .txt, .md, audio, hoặc video bằng chunked upload.
-- Transcribe media bằng STT, sửa terminology/tên riêng, rồi extract structured memory.
-- Lưu meetings, transcript, decisions, actions, facts/evidence, risks, contradictions, resurfaced items, terminology, playback audio và group metadata vào SQLite.
-- Group meetings theo group_title; nếu data cũ chưa có group_title, app fallback theo title hiện tại.
-- Cho phép kéo thả meeting card vào group khác và double-click group title để rename inline.
-- Tách dữ liệu local theo browser owner bằng localStorage và header X-Memoir-Owner.
-- Hiển thị các tab Summary, Actions, và Evidence cho meeting đang chọn.
-- Q&A chỉ trả lời trong phạm vi group/topic của meeting đang chọn.
-- Hỗ trợ assign action, lưu owner/email và gửi email follow-up nếu đã cấu hình SMTP.
-- Cho phép edit terminology, save, rồi refresh meeting để reprocess transcript và derived memory theo terminology mới.
-
-## What Makes It Different
-
+- Transcribe media bằng STT, rồi extract structured memory.
+- Lưu meetings, transcript, decisions, actions, facts/evidence, risks, contradictions, resurfaced items, terminology vào SQLite.
 - Nhớ theo chuỗi meeting: so sánh meeting hiện tại với lịch sử, không xử lý từng transcript rời rạc.
-- Bắt contradiction: chỉ ra khi claim/decision mới mâu thuẫn với meeting trước, kèm meeting number để truy vết.
-
-- Terminology-aware: có bộ terminology để sửa tên riêng/thuật ngữ như Nova, Full Rollout, Auto Settlement.
+- Tóm tắt cuộc học, quyết định đã chốt và risks/blockers.
+- Bắt contradiction: chỉ ra khi claim/decision mới mâu thuẫn với meeting trước, kèm timestamp để truy vết.
 - Q&A theo context: trả lời trong phạm vi group/topic của meeting đang chọn.
-- Workflow sau meeting: assign action, lưu owner/email, gửi email follow-up.
+- Hỗ trợ assign action và gửi email follow-up nhắc nhở.
 
 ## Architecture
 
