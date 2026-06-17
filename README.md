@@ -2,7 +2,7 @@
 
 <p align="center">
   <a>
-    <img src="https://github.com/thuminhle59/Mnemosyne-Memoir/blob/main/assets/Mnemosyne.png" alt="Logo" width="140" height="140">
+    <img src="https://github.com/thuminhle59/Mnemosyne-Memoir/blob/main/assets/Mnemosyne_cropped.png" alt="Logo" width="140" height="140">
   </a>
   <h3 align="center">Logo</h3>
   <p align="center">
