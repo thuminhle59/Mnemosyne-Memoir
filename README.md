@@ -24,7 +24,7 @@ Memoir là ứng dụng ghi nhớ quy trình họp, đóng vai trò như một b
   <a href="youtube.com"><strong>Product Demo</strong></a>
   <br />
   <br />
-  <a href="endpoint.com"><strong>Try it yourself»</strong></a>
+  <a href="https://endpoint-a2567aee-2312-4f87-94fb-bb40b89f4a12.agentbase-runtime.aiplatform.vngcloud.vn"><strong>Try it yourself»</strong></a>
   <br />
 </p>   
     
